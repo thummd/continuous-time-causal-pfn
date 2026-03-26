@@ -135,8 +135,11 @@ class ExtendedCausalTimePrior:
                 T - 1,
             )
 
-        # Ground truth
-        Y_true = float(X_int_padded[query_time_idx, query_target].item())
+        # Ground truth: raw interventional value and causal effect
+        y_int = float(X_int_padded[query_time_idx, query_target].item())
+        y_obs = float(X_obs_padded[query_time_idx, query_target].item())
+        Y_true = y_int
+        Y_causal_effect = y_int - y_obs
 
         return {
             'X_obs': X_obs_padded,                                    # (T, N_max)
@@ -150,6 +153,7 @@ class ExtendedCausalTimePrior:
             'query_target': torch.tensor(query_target, dtype=torch.long),
             'query_time': torch.tensor(query_time_idx / T, dtype=torch.float32),
             'Y_true': torch.tensor(Y_true, dtype=torch.float32),
+            'Y_causal_effect': torch.tensor(Y_causal_effect, dtype=torch.float32),
             'num_vars': torch.tensor(N, dtype=torch.long),
         }
 

@@ -7,3 +7,4 @@ build/
 checkpoints/
 /data/
 .pytest_cache/
+identifiability.tex

@@ -96,6 +96,8 @@ def train(
     prefetch: int = 2,
     head_type: str = "bar",
     tau_levels: Optional[List[float]] = None,
+    target_key: str = "Y_true",
+    observational_only: bool = False,
 ):
     """Full training pipeline for Do-Over-Time-PFN."""
 
@@ -103,6 +105,9 @@ def train(
     print("Do-Over-Time-PFN Training")
     print("=" * 70)
     print(f"   Head type: {head_type}")
+    print(f"   Target: {target_key}")
+    if observational_only:
+        print("   ABLATION: observational-only (intervention context zeroed)")
 
     # 1. Calibrate bar distribution (only for bar head)
     borders = None
@@ -162,6 +167,7 @@ def train(
         device=device,
         num_workers=num_workers,
         prefetch=prefetch,
+        target_key=target_key,
     )
 
     # Eval loader (fixed seed for consistent evaluation)
@@ -181,6 +187,14 @@ def train(
 
     for step, batch in enumerate(train_loader):
         optimizer.zero_grad()
+
+        # Observational-only ablation: zero out intervention context
+        if observational_only:
+            batch['intervention_target'] = torch.zeros_like(batch['intervention_target'])
+            batch['intervention_type'] = torch.zeros_like(batch['intervention_type'])
+            batch['intervention_value'] = torch.zeros_like(batch['intervention_value'])
+            batch['intervention_time_start'] = torch.zeros_like(batch['intervention_time_start'])
+            batch['intervention_time_end'] = torch.zeros_like(batch['intervention_time_end'])
 
         output = model(batch)
 

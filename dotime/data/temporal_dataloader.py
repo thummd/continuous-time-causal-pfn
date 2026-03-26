@@ -32,6 +32,7 @@ class TemporalInterventionDataLoader:
         device: str = "cpu",
         num_workers: int = 0,
         prefetch: int = 2,
+        target_key: str = "Y_true",
     ):
         self.num_steps = num_steps
         self.batch_size = batch_size
@@ -39,6 +40,7 @@ class TemporalInterventionDataLoader:
         self.device = device
         self.num_workers = num_workers
         self.prefetch = prefetch
+        self.target_key = target_key
 
         self.prior = ExtendedCausalTimePrior(
             n_max=n_max,
@@ -88,7 +90,7 @@ class TemporalInterventionDataLoader:
         )
 
         if self.normalize:
-            batch = normalize_batch(batch)
+            batch = normalize_batch(batch, target_key=self.target_key)
 
         # Move to device
         if self.device != "cpu":

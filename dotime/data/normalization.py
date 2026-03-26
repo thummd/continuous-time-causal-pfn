@@ -68,17 +68,34 @@ def normalize_target(
     return torch.clamp(y_norm, -10.0, 10.0)
 
 
-def normalize_batch(batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+def normalize_batch(
+    batch: Dict[str, torch.Tensor],
+    target_key: str = "Y_true",
+) -> Dict[str, torch.Tensor]:
     """Normalize a full batch in-place, adding normalized fields.
+
+    Parameters
+    ----------
+    batch : dict with X_obs, variable_mask, Y_true, query_target, etc.
+    target_key : which target to normalize as Y_true_norm.
+        "Y_true" = raw interventional value (default).
+        "Y_causal_effect" = interventional - observational difference.
 
     Adds: X_obs_norm, Y_true_norm, _norm_means, _norm_stds
     """
     X_norm, means, stds = per_variable_normalize(
         batch['X_obs'], batch['variable_mask']
     )
-    Y_norm = normalize_target(
-        batch['Y_true'], batch['query_target'], means, stds
-    )
+
+    if target_key == "Y_causal_effect" and "Y_causal_effect" in batch:
+        # Causal effect: normalize by dividing by std only (effect is already a difference)
+        batch_idx = torch.arange(batch['Y_causal_effect'].shape[0], device=batch['Y_causal_effect'].device)
+        target_std = stds[batch_idx, batch['query_target']]
+        Y_norm = torch.clamp(batch['Y_causal_effect'] / target_std, -10.0, 10.0)
+    else:
+        Y_norm = normalize_target(
+            batch[target_key], batch['query_target'], means, stds
+        )
 
     batch['X_obs_norm'] = X_norm
     batch['Y_true_norm'] = Y_norm

@@ -31,6 +31,11 @@ def main():
                         help="Output head: 'bar' (bucket distribution) or 'quantile' (pinball loss)")
     parser.add_argument("--tau-levels", type=float, nargs="+", default=None,
                         help="Quantile levels for quantile head (default: 0.1 0.25 0.5 0.75 0.9)")
+    parser.add_argument("--target-key", type=str, default="Y_true",
+                        choices=["Y_true", "Y_causal_effect"],
+                        help="Target: 'Y_true' (raw interventional) or 'Y_causal_effect' (int - obs)")
+    parser.add_argument("--observational-only", action="store_true",
+                        help="Ablation: zero out intervention context (predictive baseline)")
     args = parser.parse_args()
 
     # Load config
@@ -75,6 +80,8 @@ def main():
         prefetch=args.prefetch,
         head_type=args.head_type,
         tau_levels=args.tau_levels,
+        target_key=args.target_key,
+        observational_only=args.observational_only,
     )
 
 
