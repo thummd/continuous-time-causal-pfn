@@ -147,6 +147,73 @@ def compute_confounding_strength(X_obs, hidden_vars, int_target, N):
     }
 
 
+def _evaluate_single_query(
+    model, X_obs, X_int, X_obs_padded, X_norm, means, stds,
+    variable_mask, int_target, int_times, q_idx, query_time_idx, T, device,
+):
+    """Evaluate a single query (one variable at one time offset)."""
+    time_start = min(int_times) / T
+    time_end = max(int_times) / T
+
+    y_int = X_int[query_time_idx, q_idx].item()
+    y_obs = X_obs[query_time_idx, q_idx].item() if query_time_idx < X_obs.shape[0] else 0.0
+    y_true_norm = (y_int - means[q_idx].item()) / stds[q_idx].item()
+    causal_effect_norm = (y_int - y_obs) / stds[q_idx].item()
+
+    batch = {
+        'X_obs_norm': X_norm.unsqueeze(0).to(device),
+        'variable_mask': variable_mask.unsqueeze(0).to(device),
+        'intervention_target': torch.tensor([int_target], dtype=torch.long, device=device),
+        'intervention_type': torch.tensor([0], dtype=torch.long, device=device),
+        'intervention_value': torch.tensor([1.0], dtype=torch.float32, device=device),
+        'intervention_time_start': torch.tensor([time_start], dtype=torch.float32, device=device),
+        'intervention_time_end': torch.tensor([time_end], dtype=torch.float32, device=device),
+        'query_target': torch.tensor([q_idx], dtype=torch.long, device=device),
+        'query_time': torch.tensor([query_time_idx / T], dtype=torch.float32, device=device),
+    }
+
+    with torch.no_grad():
+        output = model(batch)
+        pred = model.head.predict_mean(output)
+
+    pred_val = pred.cpu().item()
+    obs_norm = (y_obs - means[q_idx].item()) / stds[q_idx].item()
+    pred_effect = pred_val - obs_norm
+
+    return {
+        'pred': pred_val,
+        'target': y_true_norm,
+        'causal_effect': causal_effect_norm,
+        'pred_effect': pred_effect,
+        'output': output.cpu(),
+    }
+
+
+def _aggregate_results(records, all_confounding):
+    """Compute aggregate metrics from a list of query records."""
+    if not records:
+        return {'total': 0}
+
+    preds = torch.tensor([r['pred'] for r in records])
+    targets = torch.tensor([r['target'] for r in records])
+    effects = torch.tensor([r['causal_effect'] for r in records])
+    pred_effects = torch.tensor([r['pred_effect'] for r in records])
+
+    valid_conf = [c for c in all_confounding if not np.isnan(c['mean_abs_corr'])]
+    mean_confounding = np.mean([c['mean_abs_corr'] for c in valid_conf]) if valid_conf else float('nan')
+
+    return {
+        'total': len(records),
+        'rmse': torch.sqrt(torch.mean((preds - targets) ** 2)).item(),
+        'mae': torch.mean(torch.abs(preds - targets)).item(),
+        'direction_accuracy': ((preds * targets) > 0).float().mean().item(),
+        'effect_rmse': torch.sqrt(torch.mean((pred_effects - effects) ** 2)).item(),
+        'effect_mae': torch.mean(torch.abs(pred_effects - effects)).item(),
+        'mean_effect_magnitude': effects.abs().mean().item(),
+        'mean_confounding': mean_confounding,
+    }
+
+
 def evaluate_structure(
     model,
     structure: TSCMStructure,
@@ -155,33 +222,38 @@ def evaluate_structure(
     n_max: int = 41,
     device: str = "cpu",
     multi_step: bool = False,
+    query_offsets: list = None,
 ):
     """Evaluate model on a specific causal structure.
 
-    Returns dict with aggregate and per-TSCM metrics.
+    Parameters
+    ----------
+    query_offsets : list of int, optional
+        Time offsets after intervention to query. Default [3].
+        E.g. [1, 2, 3, 5, 10] queries at 1, 2, 3, 5, 10 steps after do(A_t).
+
+    Returns dict with aggregate metrics, per-TSCM metrics, and per-offset metrics.
     """
     from causal_time_prior.interventions import InterventionSpec, InterventionType
+
+    if query_offsets is None:
+        query_offsets = [3]
 
     sampler = TSCMSampler(structure, max_lag=1)
     hidden_vars = sampler.get_hidden_vars()
 
     gen = torch.Generator().manual_seed(42)
 
-    # Per-TSCM tracking
     per_tscm = []
-    # Aggregate lists
-    all_preds = []
-    all_targets = []
-    all_causal_effects = []
-    all_pred_effects = []
     all_confounding = []
-    all_outputs = []
+    # Per-offset record buckets
+    per_offset_records = {offset: [] for offset in query_offsets}
+    all_records = []
 
     for sample_idx in range(n_samples):
         scm = sampler.sample(generator=gen)
         N = len(scm._topo)
 
-        # Generate observational data
         X_obs = scm.sample_observational(T=T, burn_in=30, generator=gen)
         if X_obs.abs().max() > 900:
             continue
@@ -191,11 +263,9 @@ def evaluate_structure(
             continue
         int_target = valid_targets[0]
 
-        # Confounding strength from observational data
         conf = compute_confounding_strength(X_obs, hidden_vars, int_target, N)
         all_confounding.append(conf)
 
-        # Intervention
         if multi_step:
             int_times = list(range(max(0, T - 10), T))
         else:
@@ -213,7 +283,6 @@ def evaluate_structure(
         if X_int.abs().max() > 900:
             continue
 
-        # Pad and normalize
         X_obs_padded = pad_to_max_nodes(X_obs, n_max)
         variable_mask = torch.zeros(n_max)
         for i in range(N):
@@ -226,72 +295,35 @@ def evaluate_structure(
         X_norm = (X_obs_padded - means.unsqueeze(0)) / stds.unsqueeze(0)
         X_norm = X_norm * variable_mask.unsqueeze(0)
 
-        time_start = min(int_times) / T
-        time_end = max(int_times) / T
-
-        # Track per-TSCM errors
-        tscm_preds = []
-        tscm_targets = []
-        tscm_effects = []
-        tscm_pred_effects = []
+        tscm_records = []
 
         for q_idx in range(N):
             if q_idx in hidden_vars or q_idx == int_target:
                 continue
 
-            query_time_idx = min(int(min(int_times) + 3), T - 1)
+            for offset in query_offsets:
+                query_time_idx = min(int(min(int_times) + offset), T - 1)
 
-            # Ground truth: raw interventional value
-            y_int = X_int[query_time_idx, q_idx].item()
-            y_obs = X_obs[query_time_idx, q_idx].item() if query_time_idx < X_obs.shape[0] else 0.0
-            y_true_norm = (y_int - means[q_idx].item()) / stds[q_idx].item()
+                rec = _evaluate_single_query(
+                    model, X_obs, X_int, X_obs_padded, X_norm, means, stds,
+                    variable_mask, int_target, int_times, q_idx, query_time_idx,
+                    T, device,
+                )
+                rec['offset'] = offset
+                rec['q_idx'] = q_idx
 
-            # Causal effect = interventional - observational
-            causal_effect = y_int - y_obs
-            causal_effect_norm = causal_effect / stds[q_idx].item()
+                per_offset_records[offset].append(rec)
+                all_records.append(rec)
+                tscm_records.append(rec)
 
-            batch = {
-                'X_obs_norm': X_norm.unsqueeze(0).to(device),
-                'variable_mask': variable_mask.unsqueeze(0).to(device),
-                'intervention_target': torch.tensor([int_target], dtype=torch.long, device=device),
-                'intervention_type': torch.tensor([0], dtype=torch.long, device=device),
-                'intervention_value': torch.tensor([1.0], dtype=torch.float32, device=device),
-                'intervention_time_start': torch.tensor([time_start], dtype=torch.float32, device=device),
-                'intervention_time_end': torch.tensor([time_end], dtype=torch.float32, device=device),
-                'query_target': torch.tensor([q_idx], dtype=torch.long, device=device),
-                'query_time': torch.tensor([query_time_idx / T], dtype=torch.float32, device=device),
-            }
-
-            with torch.no_grad():
-                output = model(batch)
-                pred = model.head.predict_mean(output)
-
-            pred_val = pred.cpu().item()
-            # Predicted causal effect: prediction (in normalized space) minus
-            # observational value (also normalized)
-            obs_norm = (y_obs - means[q_idx].item()) / stds[q_idx].item()
-            pred_effect = pred_val - obs_norm
-
-            tscm_preds.append(pred_val)
-            tscm_targets.append(y_true_norm)
-            tscm_effects.append(causal_effect_norm)
-            tscm_pred_effects.append(pred_effect)
-
-            all_preds.append(pred_val)
-            all_targets.append(y_true_norm)
-            all_causal_effects.append(causal_effect_norm)
-            all_pred_effects.append(pred_effect)
-            all_outputs.append(output.cpu())
-
-        # Per-TSCM metrics
-        if tscm_preds:
-            p = torch.tensor(tscm_preds)
-            t = torch.tensor(tscm_targets)
-            e = torch.tensor(tscm_effects)
-            pe = torch.tensor(tscm_pred_effects)
+        if tscm_records:
+            p = torch.tensor([r['pred'] for r in tscm_records])
+            t = torch.tensor([r['target'] for r in tscm_records])
+            e = torch.tensor([r['causal_effect'] for r in tscm_records])
+            pe = torch.tensor([r['pred_effect'] for r in tscm_records])
             per_tscm.append({
                 'sample_idx': sample_idx,
-                'n_queries': len(tscm_preds),
+                'n_queries': len(tscm_records),
                 'rmse': torch.sqrt(torch.mean((p - t) ** 2)).item(),
                 'mae': torch.mean(torch.abs(p - t)).item(),
                 'effect_rmse': torch.sqrt(torch.mean((pe - e) ** 2)).item(),
@@ -301,47 +333,28 @@ def evaluate_structure(
                 'confounding': conf,
             })
 
-    if not all_preds:
+    if not all_records:
         return {'total': 0}
 
-    preds = torch.tensor(all_preds)
-    targets = torch.tensor(all_targets)
-    effects = torch.tensor(all_causal_effects)
-    pred_effects = torch.tensor(all_pred_effects)
+    # Aggregate across all offsets
+    results = _aggregate_results(all_records, all_confounding)
+    results['n_tscms'] = len(per_tscm)
+    results['per_tscm'] = per_tscm
 
-    # Aggregate metrics
-    rmse = torch.sqrt(torch.mean((preds - targets) ** 2)).item()
-    mae = torch.mean(torch.abs(preds - targets)).item()
-    correct_dir = ((preds * targets) > 0).float().mean().item()
-
-    # Causal effect metrics
-    effect_rmse = torch.sqrt(torch.mean((pred_effects - effects) ** 2)).item()
-    effect_mae = torch.mean(torch.abs(pred_effects - effects)).item()
-    mean_effect_magnitude = effects.abs().mean().item()
-
-    # Confounding summary
-    valid_conf = [c for c in all_confounding if not np.isnan(c['mean_abs_corr'])]
-    mean_confounding = np.mean([c['mean_abs_corr'] for c in valid_conf]) if valid_conf else float('nan')
-
-    results = {
-        'total': len(all_preds),
-        'n_tscms': len(per_tscm),
-        'rmse': rmse,
-        'mae': mae,
-        'direction_accuracy': correct_dir,
-        'effect_rmse': effect_rmse,
-        'effect_mae': effect_mae,
-        'mean_effect_magnitude': mean_effect_magnitude,
-        'mean_confounding': mean_confounding,
-        'per_tscm': per_tscm,
-    }
+    # Per-offset breakdown
+    results['per_offset'] = {}
+    for offset in query_offsets:
+        results['per_offset'][offset] = _aggregate_results(
+            per_offset_records[offset], all_confounding,
+        )
 
     # Quantile calibration if bar distribution is available
     if hasattr(model, 'bar_head') and model.bar_head is not None and model.bar_head.bar_dist is not None:
         from dotime.eval.metrics import compute_quantile_calibration, compute_pinball_metric
         tau_levels = [0.1, 0.25, 0.5, 0.75, 0.9]
         borders = model.bar_head.borders.cpu()
-        all_logits = torch.cat(all_outputs)
+        all_logits = torch.cat([r['output'] for r in all_records])
+        targets = torch.tensor([r['target'] for r in all_records])
         cal = compute_quantile_calibration(all_logits, borders, targets, tau_levels)
         results['calibration_error'] = cal['calibration_error']
         results['pinball_loss'] = compute_pinball_metric(
@@ -360,6 +373,9 @@ def main():
                         help="Only verify data generation, no model evaluation")
     parser.add_argument("--multi-step", action="store_true",
                         help="Use multi-step interventions (for g-computation)")
+    parser.add_argument("--query-offsets", type=int, nargs="+", default=[3],
+                        help="Time offsets after intervention to query (default: 3). "
+                             "Use e.g. '1 2 3 5 10' to study effect decay.")
     args = parser.parse_args()
 
     if args.verify_only:
@@ -397,7 +413,7 @@ def main():
         print(f"\n--- {structure.value} ---")
         results = evaluate_structure(
             model, structure, n_samples=args.n_samples, device=args.device,
-            multi_step=args.multi_step,
+            multi_step=args.multi_step, query_offsets=args.query_offsets,
         )
         all_results[structure.value] = results
 
@@ -422,6 +438,18 @@ def main():
         if 'calibration_error' in results:
             print(f"  Calibration error: {results['calibration_error']:.4f}")
 
+        # Per-offset effect decay
+        if 'per_offset' in results and len(results['per_offset']) > 1:
+            print(f"  Effect decay by query offset:")
+            for offset in sorted(results['per_offset'].keys()):
+                r_off = results['per_offset'][offset]
+                if r_off['total'] == 0:
+                    continue
+                print(f"    t+{offset}: RMSE={r_off['rmse']:.4f} "
+                      f"Eff.RMSE={r_off['effect_rmse']:.4f} "
+                      f"|Effect|={r_off['mean_effect_magnitude']:.4f} "
+                      f"Dir={r_off['direction_accuracy']:.1%}")
+
     # Summary table
     print("\n" + "=" * 105)
     print(f"{'Structure':<25} {'N':>5} {'RMSE':>7} {'MAE':>7} {'Dir':>6} "
@@ -436,6 +464,29 @@ def main():
               f"{r['effect_rmse']:>8.4f} {r['mean_effect_magnitude']:>8.4f} "
               f"{r['mean_confounding']:>8.4f}")
     print("=" * 105)
+
+    # Per-offset summary table (if multiple offsets)
+    if len(args.query_offsets) > 1:
+        print("\n" + "=" * 90)
+        print("Effect decay by query offset (averaged across structures)")
+        print("-" * 90)
+        print(f"{'Offset':>8} {'N':>6} {'RMSE':>8} {'Eff.RMSE':>9} {'|Effect|':>9} {'Dir.Acc':>8}")
+        print("-" * 90)
+        for offset in sorted(args.query_offsets):
+            # Pool across structures
+            off_totals = []
+            for name, r in all_results.items():
+                if r['total'] > 0 and offset in r.get('per_offset', {}):
+                    off_totals.append(r['per_offset'][offset])
+            if off_totals:
+                n = sum(o['total'] for o in off_totals)
+                avg_rmse = np.mean([o['rmse'] for o in off_totals])
+                avg_eff = np.mean([o['effect_rmse'] for o in off_totals])
+                avg_mag = np.mean([o['mean_effect_magnitude'] for o in off_totals])
+                avg_dir = np.mean([o['direction_accuracy'] for o in off_totals])
+                print(f"  t+{offset:<5} {n:>6} {avg_rmse:>8.4f} {avg_eff:>9.4f} "
+                      f"{avg_mag:>9.4f} {avg_dir:>7.1%}")
+        print("=" * 90)
 
 
 if __name__ == "__main__":
