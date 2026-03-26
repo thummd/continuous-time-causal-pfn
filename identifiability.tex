@@ -1,0 +1,324 @@
+\documentclass[11pt]{article}
+
+% ---------- Encoding and fonts ----------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+
+% ---------- Page layout ----------
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{setspace}
+\usepackage{parskip}
+
+% ---------- Math packages ----------
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+
+% ---------- Graphics ----------
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{subcaption}
+
+% ---------- Tables ----------
+\usepackage{booktabs}
+\usepackage{multirow}
+
+% ---------- Lists ----------
+\usepackage{enumitem}
+
+% ---------- Links ----------
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+
+% ---------- Useful symbols ----------
+\usepackage{siunitx}
+
+% ---------- Theorem environments ----------
+\theoremstyle{definition}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+
+\newtheorem{definition}{Definition}
+\newtheorem{assumption}{Assumption}
+\newtheorem{example}{Example}
+
+\theoremstyle{remark}
+
+\newtheorem{remark}{Remark}
+
+% ---------- Custom commands ----------
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Cov}{\mathrm{Cov}}
+\newcommand{\Prob}{\mathbb{P}}
+
+\newcommand{\vx}{\mathbf{x}}
+\newcommand{\vy}{\mathbf{y}}
+\newcommand{\vX}{\mathbf{X}}
+
+\newcommand{\indep}{\perp\!\!\!\perp}
+
+\newcommand{\argmin}{\operatorname*{argmin}}
+\newcommand{\argmax}{\operatorname*{argmax}}
+
+% ---------- Document ----------
+\title{Identifiability in Temporal SCMs}
+\author{}
+%\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+\textbf{Goal} The goal here is to examine the identifiability of causal quantities in temporal SCMs. The estimation of the identified estimands will be shortly discussed. 
+
+\textbf{Formalism} We follows Dennis' workshop paper on Interventional Time Series Priors for Causal Foundation Models
+
+A temporal structural causal model (TSCM) $S = (G,F,P_{\epsilon})$ consists of:
+
+\begin{itemize}
+
+\item A time-lagged DAG 
+\[
+G = (G_0, G_1, \dots, G_K)
+\]
+where $G_0 \in \{0,1\}^{N \times N}$ encodes instantaneous (intra-slice) edges and $G_k$ encodes edges from time $t-k$ to $t$ for lags $k \in \{1,\dots,K\}$.
+
+\item Structural equations $F = \{f_i\}_{i=1}^N$ where:
+\begin{equation}
+X_t^{(i)} =
+f_i\!\left(
+\mathrm{Pa}_G(X_t^{(i)})
+\right)
++
+\epsilon_t^{(i)},
+\qquad
+\epsilon_t^{(i)} \sim P_\epsilon^{(i)}
+\end{equation}
+
+with parents
+\[
+\mathrm{Pa}_G(Z_t^{(i)}) =
+\left\{
+Z_{t-k}^{(j)}
+\;:\;
+G_k[j,i] = 1,\;
+k \in \{0,\dots,K\}
+\right\}.
+\]
+
+\end{itemize}
+
+Let's use $Y_t$ to denote the outcome variable, $A_t$ the intervention variable and $X_t$ a potentially multivariate vector of covariates. Let us use $H_t = (Y_t, A_t, X_t)$ to abbreviate all variables 
+
+The goal is to predict
+\begin{equation}
+    P(Y_t| do(A_t), H_{t-1}, H_{t-2}, \ldots, H_0), 
+\end{equation}
+
+i.e. an outcome $Y_t$ at time-point $t$ provided an intervention $A_t$ at time-point $t$ while conditioning on the past trajectory given by $H_{t-1}, H_{t-2}, \ldots, H_0$. Note we marginalizes over $X_t$, i.e.  we assume that $X_t$ is unknown. 
+
+First, it immediately follows that for a time-lagged DAG with lags up to time $K$ we are dealing with a $K$-Markovian process:\footnote{Strictly speaking, we have $P(Y_t| do(A_t), H_{t-1}, H_{t-2}, \ldots, H_0) = P(Y_t| do(A_t), H_{\max(t-1,0)}, \ldots H_{\max(t-K,0)})$
+
+because the time-index starts at $0$, but we can ignore this for convenience for now.} 
+
+\begin{equation}
+    P(Y_t| do(A_t), H_{t-1}, H_{t-2}, \ldots, H_0) = P(Y_t| do(A_t), H_{t-1}, \ldots H_{t-K})
+\end{equation}
+
+\paragraph{Identifiability in general}
+
+The $K$-Markov property means that we can consider the SCM with nodes
+
+$$Y_t, A_t, Y_{t-1}, A_{t-1}, X_{t-1}, \ldots Y_{t-K}, A_{t-K}, X_{t-K},$$
+
+and then treat this as a normal ``static" SCM where adjustment works as usual.
+
+What we need to consider, however is that everything is still conditioned on the past, e.g. if we would normally integrate wrt. $P(X_{t-1})$ to do some adjustment, we now need to integrate wrt. $P(X_{t-1}|H_{t-2}, ..., H_{t-1-K})$. This hopefully becomes clearer in the following more concrete sections. 
+
+
+
+\subsection{Backdoor-Adjustment}
+
+Assume that the covariates $X_t$ form a valid backdoor adjustment set for the causal effect of $A_t$ on $Y_t$ in the time-unrolled SCM consisting of
+
+\[
+(Y_t, A_t, X_t, H_{t-1}, \dots, H_{t-K}).
+\]
+
+Using standard backdoor adjustment gives\footnote{I wrote this in terms of densities for simplicity. One can also make this more "sophisticated" using measure-integrals and Markov kernels and that stuff...}:
+
+\begin{equation}
+\begin{aligned}
+&p(Y_t \mid do(A_t), H_{t-1},\dots,H_{t-K}) \\
+&=
+\int
+p(Y_t \mid A_t, X_t, H_{t-1},\dots,H_{t-K}) \, p(X_t \mid H_{t-1},\dots,H_{t-K})
+\, dX_t
+\end{aligned}
+\end{equation}
+
+The key difference to the classical adjustment formula is therefore that we must integrate with respect to the conditional distribution $p(X_t \mid H_{t-1},\dots,H_{t-K})$ rather than a marginal distribution $p(X_t)$. 
+
+Also note that having a valid backdoor adjustment set within the variables in $X_t$ with respect to $A_t$ and $Y_t$ (recall that $X_t$ may contain several variables) is not invalidated by additionally conditioning on \textbf{observed} variables in $H_{t-1}, H_{t-2}, \ldots$, because due to the temporal ordering they are also ``backdoor'' with respect to $A_t$ and $Y_t$.
+
+\paragraph{Estimation}
+
+In practice, this means estimation proceeds exactly like classical backdoor adjustment, except that both required components must be modeled conditionally on the past trajectory:
+
+\begin{enumerate}
+
+\item Outcome model:
+\[
+\hat{p}(Y_t \mid A_t, X_t, H_{t-1},\dots,H_{t-K})
+\]
+
+\item Covariate model:
+\[
+\hat{p}(X_t \mid H_{t-1},\dots,H_{t-K})
+\]
+
+\end{enumerate}
+
+We need to estimate both quantities from the past trajectory $H_{t-1}, \dots, H_{t-K}$, which is an ordinary time-series modelling task. (But it might get annoying if $X_t$ is multivariate).
+
+
+\subsubsection{Adjustment with variables from the past}
+
+Besides using $X_t$, it may also be possible to use variables from previous timesteps such as $X_{t-1}$, $A_{t-1}$, $Y_{t-1}$, or combinations thereof for adjustment. More generally, valid adjustment sets could also include variables from timesteps $t-2, t-3, \dots, t-K$.
+
+The key observation is that, due to the temporal ordering of the SCM, variables from the past cannot be descendants of $A_t$. Therefore, they are natural candidates for adjustment sets, provided they block all backdoor paths between $A_t$ and $Y_t$ in the time-unrolled graph.
+
+If a valid adjustment set $Z_t$ can be constructed purely from past variables, for example
+\[
+Z_t \subseteq \{H_{t-1}, \dots, H_{t-K}\},
+\]
+then we obtain the adjustment formula:
+
+\begin{equation}
+\begin{aligned}
+&p(Y_t \mid do(A_t), H_{t-1},\dots,H_{t-K}) \\
+&=
+\int
+p(Y_t \mid A_t, Z_t, H_{t-1},\dots,H_{t-K})
+\, p(Z_t \mid H_{t-1},\dots,H_{t-K})
+\, dZ_t.
+\end{aligned}
+\end{equation}
+
+A potential practical advantage of such adjustment sets is that they avoid the need to model the contemporaneous covariate distribution $p(X_t \mid H_{t-1},\dots,H_{t-K})$, which may be difficult to estimate in practice. Instead, adjustment can rely purely on already observed variables from the past trajectory.
+
+However, an important caveat is that past variables may themselves be affected by earlier treatments, which might make it more difficult to estimate the outcome and covariate model. 
+
+For example, in a two-Markov process we can directly estimate
+\[
+p(X_t \mid X_{t-1}, X_{t-2}),
+\]
+but estimating
+\[
+p(X_t \mid X_{t-1})
+\]
+requires marginalizing over the omitted history:
+\[
+p(X_t \mid X_{t-1})
+=
+\int
+p(X_t \mid X_{t-1}, X_{t-2}) \, p(X_{t-2} \mid X_{t-1})
+\, dX_{t-2}.
+\]
+
+\subsection{Frontdoor-Adjustment}
+
+Besides backdoor adjustment, causal effects in temporal SCMs may also be identifiable using frontdoor adjustment. Assume that there exists a mediator variable $M_t$ (or a set of mediators) such that all directed causal paths from $A_t$ to $Y_t$ pass through $M_t$ in the time-unrolled SCM consisting of
+
+\[
+(Y_t, A_t, M_t, H_{t-1}, \dots, H_{t-K}).
+\]
+
+Furthermore assume:
+
+\begin{enumerate}
+
+\item All directed paths from $A_t$ to $Y_t$ pass through $M_t$
+
+\item All backdoor paths from $A_t$ to $M_t$ are blocked by the past trajectory $H_{t-1},\dots,H_{t-K}$
+
+\item All backdoor paths from $M_t$ to $Y_t$ are blocked by $A_t$ together with the past trajectory
+
+\end{enumerate}
+
+Under these assumptions, the causal effect is identifiable via frontdoor adjustment. Adapting the classical frontdoor formula to the temporal setting gives:
+
+\begin{equation}
+\begin{aligned}
+&p(Y_t \mid do(A_t), H_{t-1},\dots,H_{t-K}) \\
+&=
+\int p(M_t \mid A_t, H_{t-1},\dots,H_{t-K}) \\
+&\qquad \cdot
+\left(
+\int p(Y_t \mid M_t, A'_t, H_{t-1},\dots,H_{t-K}) \,
+p(A'_t \mid H_{t-1},\dots,H_{t-K})
+\, dA'_t
+\right)
+dM_t.
+\end{aligned}
+\end{equation}
+
+As in the backdoor case, the key difference to the classical frontdoor formula is that all distributions must be conditioned on the past trajectory, since both treatment assignment and mediator distributions typically depend on the process history.
+
+\paragraph{The effect of past effects on mediators}
+
+Past variables may affect the validity of the frontdoor criterion. In particular, variables from the past may introduce additional backdoor paths between $M_t$ and $Y_t$. For example, if a past variable influences both the mediator and the outcome, a path of the form
+
+\[
+M_t \leftarrow H_{t-1} \rightarrow Y_t
+\]
+
+may exist. In such cases, these paths must be blocked by conditioning on the relevant past variables.
+
+Thus, when verifying the frontdoor assumptions in temporal SCMs, it is necessary to consider the fully time-unrolled graph including the past trajectory.
+
+\paragraph{Estimation}
+
+Estimation proceeds similarly to the classical frontdoor case, except that all required components must be modeled conditionally on the past trajectory:
+
+\begin{enumerate}
+
+\item Mediator model:
+\[
+\hat{p}(M_t \mid A_t, H_{t-1},\dots,H_{t-K})
+\]
+
+\item Outcome model:
+\[
+\hat{p}(Y_t \mid M_t, A_t, H_{t-1},\dots,H_{t-K})
+\]
+
+\item Treatment model:
+\[
+\hat{p}(A_t \mid H_{t-1},\dots,H_{t-K})
+\]
+
+\end{enumerate}
+
+All three components correspond to standard time-series modeling tasks. Compared to backdoor adjustment, frontdoor adjustment may be preferable when the covariate distribution is difficult to model but treatment assignment and mediator mechanisms are easier to estimate.
+
+
+\end{document}

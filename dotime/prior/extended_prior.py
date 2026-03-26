@@ -153,7 +153,9 @@ class ExtendedCausalTimePrior:
             'num_vars': torch.tensor(N, dtype=torch.long),
         }
 
-    def generate_batch(self, batch_size: int, T: Optional[int] = None) -> Dict[str, torch.Tensor]:
+    def generate_batch(
+        self, batch_size: int, T: Optional[int] = None, **kwargs,
+    ) -> Dict[str, torch.Tensor]:
         """Generate a batch of model-ready samples.
 
         All samples in a batch share the same T (sampled once if not provided).

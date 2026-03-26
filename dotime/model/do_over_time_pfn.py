@@ -3,23 +3,24 @@
 Two-stage architecture:
 1. Per-variable temporal encoding via GatedDeltaProduct or Transformer
 2. Cross-variable causal reasoning via attention with intervention/query context
-3. Bar distribution output (1000 buckets)
+3. Output head: bar distribution (1000 buckets) or quantile predictions
 """
 
 import torch
 import torch.nn as nn
-from typing import Dict
+from typing import Dict, List, Optional
 
 from dotime.model.encoder import TemporalEncoder
 from dotime.model.cross_variable_mixer import CrossVariableMixer
 from dotime.model.bar_head import BarDistributionHead
+from dotime.model.quantile_head import QuantileHead
 
 
 class DoOverTimePFN(nn.Module):
     """In-context causal effect estimation for temporal data.
 
-    Predicts P(X_j^{do}(t_query) | X_obs, intervention_spec) as a
-    bar distribution over 1000 buckets.
+    Predicts P(X_j^{do}(t_query) | X_obs, intervention_spec) via either
+    a bar distribution over buckets or direct quantile predictions.
     """
 
     def __init__(
@@ -32,8 +33,11 @@ class DoOverTimePFN(nn.Module):
         n_buckets: int = 1000,
         encoder_backend: str = "transformer",
         encoder_config: dict = None,
+        head_type: str = "bar",
+        tau_levels: Optional[List[float]] = None,
     ):
         super().__init__()
+        self.head_type = head_type
 
         self.temporal_encoder = TemporalEncoder(
             n_max=n_max,
@@ -50,10 +54,23 @@ class DoOverTimePFN(nn.Module):
             n_heads=n_cross_attn_heads,
         )
 
-        self.bar_head = BarDistributionHead(
-            embed_size=embed_size,
-            n_buckets=n_buckets,
-        )
+        if head_type == "quantile":
+            self.quantile_head = QuantileHead(
+                embed_size=embed_size,
+                tau_levels=tau_levels,
+            )
+            self.bar_head = None
+        else:
+            self.bar_head = BarDistributionHead(
+                embed_size=embed_size,
+                n_buckets=n_buckets,
+            )
+            self.quantile_head = None
+
+    @property
+    def head(self):
+        """Return the active output head."""
+        return self.quantile_head if self.head_type == "quantile" else self.bar_head
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Forward pass.
@@ -73,7 +90,7 @@ class DoOverTimePFN(nn.Module):
 
         Returns
         -------
-        logits : (B, n_buckets) raw logits for bar distribution
+        output : (B, n_buckets) logits or (B, Q) quantile predictions
         """
         # Stage 1: Per-variable temporal encoding
         h_vars = self.temporal_encoder(
@@ -94,24 +111,13 @@ class DoOverTimePFN(nn.Module):
             variable_mask=batch['variable_mask'],
         )  # (B, E)
 
-        # Stage 3: Bar distribution output
-        logits = self.bar_head(h_causal)  # (B, n_buckets)
-
-        return logits
+        # Stage 3: Output head
+        return self.head(h_causal)
 
     def loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Compute bar distribution loss for a batch.
-
-        Parameters
-        ----------
-        batch : dict with all required keys including Y_true_norm
-
-        Returns
-        -------
-        loss : scalar tensor
-        """
-        logits = self.forward(batch)
-        return self.bar_head.loss(logits, batch['Y_true_norm'])
+        """Compute loss for a batch."""
+        output = self.forward(batch)
+        return self.head.loss(output, batch['Y_true_norm'])
 
     def predict(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Predict mean values for a batch.
@@ -120,5 +126,5 @@ class DoOverTimePFN(nn.Module):
         -------
         predictions : (B,) predicted mean values (normalized)
         """
-        logits = self.forward(batch)
-        return self.bar_head.predict_mean(logits)
+        output = self.forward(batch)
+        return self.head.predict_mean(output)

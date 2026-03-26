@@ -20,13 +20,28 @@ from dopfnprior.configs.default_config import Tanh, TanhReLU
 
 
 class TSCMStructure(Enum):
-    """Named temporal causal structures for identifiability studies."""
-    OBSERVED_CONFOUNDER = "observed_confounder"       # Z -> X, Z -> Y
-    MEDIATOR = "mediator"                              # X -> M -> Y
-    CONFOUNDER_MEDIATOR = "confounder_mediator"        # Z -> X -> M -> Y, Z -> Y
-    UNOBSERVED_CONFOUNDER = "unobserved_confounder"    # U -> X, U -> Y (U hidden)
-    BACK_DOOR = "back_door"                            # Z -> X, Z -> Y, X -> Y
-    FRONT_DOOR = "front_door"                          # X -> M -> Y, U -> X, U -> Y (U hidden)
+    """Named temporal causal structures for identifiability studies.
+
+    Identification strategies (cf. identifiability.tex):
+    - Backdoor: OBSERVED_CONFOUNDER, BACK_DOOR, CONFOUNDER_MEDIATOR
+      Adjust via observed covariates that block all back-door paths.
+    - Frontdoor: FRONT_DOOR, MEDIATOR
+      Adjust via mediator when confounder is hidden.
+    - Trivially identified: RCT_NO_CONFOUNDING
+      No confounding => p(Y|do(A)) = p(Y|A).
+    - IV: INSTRUMENTAL_VARIABLE
+      Z -> A -> Y with hidden confounding U -> A, U -> Y.
+    - Non-identifiable: UNOBSERVED_CONFOUNDER
+      Hidden confounder, no mediator or instrument. Tests model robustness.
+    """
+    OBSERVED_CONFOUNDER = "observed_confounder"       # Z -> X, Z -> Y (backdoor)
+    MEDIATOR = "mediator"                              # X -> M -> Y (frontdoor, trivial)
+    CONFOUNDER_MEDIATOR = "confounder_mediator"        # Z -> X -> M -> Y, Z -> Y (backdoor)
+    UNOBSERVED_CONFOUNDER = "unobserved_confounder"    # U -> X, U -> Y (non-identifiable)
+    BACK_DOOR = "back_door"                            # Z -> X, Z -> Y, X -> Y (backdoor)
+    FRONT_DOOR = "front_door"                          # X -> M -> Y, U -> X, U -> Y (frontdoor)
+    INSTRUMENTAL_VARIABLE = "instrumental_variable"    # Z -> A -> Y, U -> A, U -> Y (IV)
+    RCT_NO_CONFOUNDING = "rct_no_confounding"          # A -> Y (trivially identified)
 
 
 # Default activations for random mechanism sampling
@@ -78,9 +93,11 @@ class TSCMSampler:
 
     def get_hidden_vars(self) -> List[int]:
         """Return indices of hidden (unobserved) variables, if any."""
-        if self.structure == TSCMStructure.UNOBSERVED_CONFOUNDER:
-            return [0]  # U is first variable
-        elif self.structure == TSCMStructure.FRONT_DOOR:
+        if self.structure in (
+            TSCMStructure.UNOBSERVED_CONFOUNDER,
+            TSCMStructure.FRONT_DOOR,
+            TSCMStructure.INSTRUMENTAL_VARIABLE,
+        ):
             return [0]  # U is first variable
         return []
 
@@ -205,6 +222,47 @@ class TSCMSampler:
         G_0.add_edge("U", "Y")  # instantaneous
         G_0.add_edge("X", "M")  # instantaneous
         G_0.add_edge("M", "Y")  # instantaneous
+
+        N = len(nodes)
+        G_lags = []
+        for k in range(self.max_lag):
+            G_k = np.zeros((N, N), dtype=np.float32)
+            if k == 0:
+                for i in range(N):
+                    G_k[i, i] = 1.0
+            G_lags.append(G_k)
+
+        topo = list(nx.topological_sort(G_0))
+        return TemporalDAG(G_0, G_lags, self.max_lag, topo)
+
+    def _build_instrumental_variable(self) -> TemporalDAG:
+        """Z -> A -> Y, U -> A, U -> Y. U hidden. Z is an instrument for A->Y."""
+        G_0 = nx.DiGraph()
+        nodes = ["U", "Z", "A", "Y"]
+        G_0.add_nodes_from(nodes)
+        G_0.add_edge("U", "A")  # hidden confounder -> treatment
+        G_0.add_edge("U", "Y")  # hidden confounder -> outcome
+        G_0.add_edge("Z", "A")  # instrument -> treatment
+        G_0.add_edge("A", "Y")  # treatment -> outcome
+
+        N = len(nodes)
+        G_lags = []
+        for k in range(self.max_lag):
+            G_k = np.zeros((N, N), dtype=np.float32)
+            if k == 0:
+                for i in range(N):
+                    G_k[i, i] = 1.0
+            G_lags.append(G_k)
+
+        topo = list(nx.topological_sort(G_0))
+        return TemporalDAG(G_0, G_lags, self.max_lag, topo)
+
+    def _build_rct_no_confounding(self) -> TemporalDAG:
+        """A -> Y. No confounding. Trivially identified: p(Y|do(A)) = p(Y|A)."""
+        G_0 = nx.DiGraph()
+        nodes = ["A", "Y"]
+        G_0.add_nodes_from(nodes)
+        G_0.add_edge("A", "Y")  # direct causal effect
 
         N = len(nodes)
         G_lags = []

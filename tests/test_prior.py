@@ -56,7 +56,7 @@ def test_tscm_all_structures():
         scm = sampler.sample(generator=gen)
         X_obs = scm.sample_observational(T=20, burn_in=10, generator=gen)
         assert X_obs.shape[0] == 20
-        assert X_obs.shape[1] >= 3
+        assert X_obs.shape[1] >= 2  # RCT has only 2 nodes (A, Y)
 
 
 def test_tscm_hidden_vars():
@@ -67,8 +67,14 @@ def test_tscm_hidden_vars():
     s2 = TSCMSampler(TSCMStructure.FRONT_DOOR)
     assert s2.get_hidden_vars() == [0]
 
-    s3 = TSCMSampler(TSCMStructure.OBSERVED_CONFOUNDER)
-    assert s3.get_hidden_vars() == []
+    s3 = TSCMSampler(TSCMStructure.INSTRUMENTAL_VARIABLE)
+    assert s3.get_hidden_vars() == [0]
+
+    s4 = TSCMSampler(TSCMStructure.OBSERVED_CONFOUNDER)
+    assert s4.get_hidden_vars() == []
+
+    s5 = TSCMSampler(TSCMStructure.RCT_NO_CONFOUNDING)
+    assert s5.get_hidden_vars() == []
 
 
 if __name__ == "__main__":

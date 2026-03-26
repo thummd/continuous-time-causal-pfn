@@ -35,21 +35,23 @@ def evaluate(model, dataloader, device, tau_levels=None):
     total_pinball = 0
     n_batches = 0
 
+    head = model.head
+
     for batch in dataloader:
         batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                  for k, v in batch.items()}
 
-        logits = model(batch)
-        loss = model.bar_head.loss(logits, batch['Y_true_norm'])
+        output = model(batch)
+        loss = head.loss(output, batch['Y_true_norm'])
         total_loss += loss.item()
 
-        mean_pred = model.bar_head.predict_mean(logits)
+        mean_pred = head.predict_mean(output)
         rmse = torch.sqrt(torch.mean((mean_pred - batch['Y_true_norm']) ** 2))
         total_rmse += rmse.item()
 
-        if tau_levels is not None:
-            pb_loss = model.bar_head.compute_pinball_loss(
-                logits, batch['Y_true_norm'], tau_levels)
+        if tau_levels is not None and hasattr(head, 'compute_pinball_loss'):
+            pb_loss = head.compute_pinball_loss(
+                output, batch['Y_true_norm'], tau_levels)
             total_pinball += pb_loss.item()
 
         n_batches += 1
@@ -90,24 +92,33 @@ def train(
     save_dir: str = "checkpoints",
     pinball_weight: float = 0.0,
     pinball_quantiles: Optional[List[float]] = None,
+    num_workers: int = 0,
+    prefetch: int = 2,
+    head_type: str = "bar",
+    tau_levels: Optional[List[float]] = None,
 ):
     """Full training pipeline for Do-Over-Time-PFN."""
 
     print("=" * 70)
     print("Do-Over-Time-PFN Training")
     print("=" * 70)
+    print(f"   Head type: {head_type}")
 
-    # 1. Calibrate bar distribution
-    print(f"\n1. Calibrating bar distribution ({bucket_calibration_samples} samples, {n_buckets} buckets)...")
-    cal_steps = max(bucket_calibration_samples // batch_size, 10)
-    cal_loader = TemporalInterventionDataLoader(
-        num_steps=cal_steps, batch_size=batch_size,
-        n_max=n_max, n_max_prior=n_max_prior,
-        t_range=t_range, burn_in=burn_in,
-        downstream_prob=downstream_prob, seed=seed + 1000,
-    )
-    bar_dist, borders = calibrate_bar_distribution(cal_loader, n_buckets=n_buckets)
-    print(f"   Borders range: [{borders.min():.2f}, {borders.max():.2f}]")
+    # 1. Calibrate bar distribution (only for bar head)
+    borders = None
+    if head_type == "bar":
+        print(f"\n1. Calibrating bar distribution ({bucket_calibration_samples} samples, {n_buckets} buckets)...")
+        cal_steps = max(bucket_calibration_samples // batch_size, 10)
+        cal_loader = TemporalInterventionDataLoader(
+            num_steps=cal_steps, batch_size=batch_size,
+            n_max=n_max, n_max_prior=n_max_prior,
+            t_range=t_range, burn_in=burn_in,
+            downstream_prob=downstream_prob, seed=seed + 1000,
+        )
+        bar_dist, borders = calibrate_bar_distribution(cal_loader, n_buckets=n_buckets)
+        print(f"   Borders range: [{borders.min():.2f}, {borders.max():.2f}]")
+    else:
+        print("\n1. Skipping bar calibration (quantile head).")
 
     # 2. Create model
     print(f"\n2. Creating model (embed={embed_size}, layers={n_encoder_layers}, backend={encoder_backend})...")
@@ -116,8 +127,11 @@ def train(
         n_encoder_layers=n_encoder_layers, n_cross_attn_heads=n_cross_attn_heads,
         n_buckets=n_buckets, encoder_backend=encoder_backend,
         encoder_config=encoder_config,
+        head_type=head_type,
+        tau_levels=tau_levels,
     )
-    model.bar_head.set_bar_distribution(bar_dist, borders.to(device))
+    if head_type == "bar":
+        model.bar_head.set_bar_distribution(bar_dist, borders.to(device))
     model = model.to(device)
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -146,6 +160,8 @@ def train(
         t_range=t_range, burn_in=burn_in,
         downstream_prob=downstream_prob, seed=seed,
         device=device,
+        num_workers=num_workers,
+        prefetch=prefetch,
     )
 
     # Eval loader (fixed seed for consistent evaluation)
@@ -166,14 +182,24 @@ def train(
     for step, batch in enumerate(train_loader):
         optimizer.zero_grad()
 
-        logits = model(batch)
-        bar_loss = model.bar_head.loss(logits, batch['Y_true_norm'])
-        if tau_levels is not None:
-            pb_loss = model.bar_head.compute_pinball_loss(
-                logits, batch['Y_true_norm'], tau_levels)
-            loss = bar_loss + pinball_weight * pb_loss
+        output = model(batch)
+
+        # Skip batches with extreme normalized targets (normalization edge case)
+        y_max = batch['Y_true_norm'].abs().max().item()
+        if y_max > 20:
+            print(f"   Step {step}: extreme Y_true_norm={y_max:.1f}, skipping")
+            continue
+
+        if head_type == "quantile":
+            loss = model.quantile_head.loss(output, batch['Y_true_norm'])
         else:
-            loss = bar_loss
+            bar_loss = model.bar_head.loss(output, batch['Y_true_norm'])
+            if tau_levels is not None:
+                pb_loss = model.bar_head.compute_pinball_loss(
+                    output, batch['Y_true_norm'], tau_levels)
+                loss = bar_loss + pinball_weight * pb_loss
+            else:
+                loss = bar_loss
 
         if not torch.isfinite(loss):
             print(f"   Step {step}: NaN/Inf loss, skipping")
@@ -216,11 +242,14 @@ def train(
                     'eval_loss': eval_loss,
                     'eval_rmse': eval_rmse,
                     'borders': borders,
+                    'head_type': head_type,
                     'config': {
                         'n_max': n_max, 'embed_size': embed_size,
                         'n_heads': n_heads, 'n_encoder_layers': n_encoder_layers,
                         'n_cross_attn_heads': n_cross_attn_heads,
                         'n_buckets': n_buckets, 'encoder_backend': encoder_backend,
+                        'head_type': head_type,
+                        'tau_levels': tau_levels,
                     },
                 }, save_path)
 

@@ -88,10 +88,9 @@ mkdir -p "$RESULTS_DIR" "$CKPT_DIR"
 echo ""
 echo "[3/5] Training BASELINE model (pinball_weight=0, 100K steps)..."
 python "$REPO_DIR/scripts/train.py" \
-    --config "$REPO_DIR/configs/default.yaml" \
+    --config "$REPO_DIR/configs/server.yaml" \
     --device "$DEVICE" \
     --pinball-weight 0.0 \
-    --batch-size "$BATCH_SIZE" \
     --save-dir "$CKPT_DIR/baseline_pw0" \
     2>&1 | tee "$RESULTS_DIR/train_baseline.log"
 
@@ -99,10 +98,9 @@ python "$REPO_DIR/scripts/train.py" \
 echo ""
 echo "[4/5] Training PINBALL model (pinball_weight=0.1, 100K steps)..."
 python "$REPO_DIR/scripts/train.py" \
-    --config "$REPO_DIR/configs/default.yaml" \
+    --config "$REPO_DIR/configs/server.yaml" \
     --device "$DEVICE" \
     --pinball-weight 0.1 \
-    --batch-size "$BATCH_SIZE" \
     --save-dir "$CKPT_DIR/pinball_pw0.1" \
     2>&1 | tee "$RESULTS_DIR/train_pinball.log"
 

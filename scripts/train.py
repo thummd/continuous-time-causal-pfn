@@ -23,6 +23,14 @@ def main():
                         help="Auxiliary pinball loss weight (0 = disabled)")
     parser.add_argument("--pinball-quantiles", type=float, nargs="+", default=None,
                         help="Quantile levels for pinball loss")
+    parser.add_argument("--num-workers", type=int, default=0,
+                        help="Number of parallel workers for data generation (0 = sequential)")
+    parser.add_argument("--prefetch", type=int, default=2,
+                        help="Number of batches to prefetch (0 = no prefetching)")
+    parser.add_argument("--head-type", type=str, default="bar", choices=["bar", "quantile"],
+                        help="Output head: 'bar' (bucket distribution) or 'quantile' (pinball loss)")
+    parser.add_argument("--tau-levels", type=float, nargs="+", default=None,
+                        help="Quantile levels for quantile head (default: 0.1 0.25 0.5 0.75 0.9)")
     args = parser.parse_args()
 
     # Load config
@@ -63,6 +71,10 @@ def main():
                         else train_cfg.get("pinball_weight", 0.0)),
         pinball_quantiles=(args.pinball_quantiles if args.pinball_quantiles is not None
                            else train_cfg.get("pinball_quantiles")),
+        num_workers=args.num_workers,
+        prefetch=args.prefetch,
+        head_type=args.head_type,
+        tau_levels=args.tau_levels,
     )
 
 

@@ -63,8 +63,8 @@ def verify_data_generation(n_samples: int = 10, T: int = 50):
                 continue
             int_target = valid_targets[0]
 
-            # Create intervention: hard do at time steps [T-10, ..., T-1]
-            int_times = list(range(max(0, T - 10), T))
+            # Create intervention: single-step do(A_t) by default
+            int_times = [max(0, T - 5)]
             intervention = InterventionSpec(
                 targets=[int_target],
                 times=int_times,
@@ -118,6 +118,7 @@ def evaluate_structure(
     T: int = 50,
     n_max: int = 41,
     device: str = "cpu",
+    multi_step: bool = False,
 ):
     """Evaluate model on a specific causal structure.
 
@@ -149,8 +150,11 @@ def evaluate_structure(
 
         int_target = valid_targets[0]
 
-        # Create intervention at time steps [T-10, ..., T-1]
-        int_times = list(range(max(0, T - 10), T))
+        # Intervention timing: single-step by default, multi-step for g-computation
+        if multi_step:
+            int_times = list(range(max(0, T - 10), T))
+        else:
+            int_times = [max(0, T - 5)]
         intervention = InterventionSpec(
             targets=[int_target],
             times=int_times,
@@ -254,6 +258,8 @@ def main():
     parser.add_argument("--n-samples", type=int, default=50)
     parser.add_argument("--verify-only", action="store_true",
                         help="Only verify data generation, no model evaluation")
+    parser.add_argument("--multi-step", action="store_true",
+                        help="Use multi-step interventions (for g-computation)")
     args = parser.parse_args()
 
     if args.verify_only:
@@ -286,6 +292,7 @@ def main():
         print(f"\n--- {structure.value} ---")
         results = evaluate_structure(
             model, structure, n_samples=args.n_samples, device=args.device,
+            multi_step=args.multi_step,
         )
         all_results[structure.value] = results
 

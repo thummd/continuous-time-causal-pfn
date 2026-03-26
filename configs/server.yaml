@@ -1,0 +1,35 @@
+model:
+  n_max: 12            # prior generates up to 10 vars + small padding margin
+  embed_size: 512      # match TempoPFN
+  n_heads: 4           # match TempoPFN
+  n_encoder_layers: 6  # reduced from 10 to fit shared A100
+  n_cross_attn_heads: 4
+  n_buckets: 1000
+  encoder:             # GatedDeltaProduct config (from TempoPFN)
+    expand_v: 1.0
+    use_short_conv: true
+    conv_size: 32
+    use_gate: true
+    use_forget_gate: true
+    num_householder: 4
+    weaving: true
+
+prior:
+  n_min: 3
+  n_max: 10
+  t_range: [50, 100]   # capped at 100 to bound peak GPU memory
+  burn_in: 50
+  downstream_prob: 0.7
+
+training:
+  batch_size: 16
+  lr: 0.0002           # match TempoPFN
+  warmup_steps: 1000
+  total_steps: 100000
+  grad_clip: 100.0     # match TempoPFN
+  weight_decay: 0.01
+  bucket_calibration_samples: 10000
+  eval_every: 500
+  seed: 42
+  pinball_weight: 0.0            # 0 = disabled, >0 = auxiliary pinball loss weight
+  pinball_quantiles: [0.1, 0.25, 0.5, 0.75, 0.9]
