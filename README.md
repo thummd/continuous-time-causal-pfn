@@ -92,6 +92,19 @@ The TSCM sampler generates 8 specific causal structures to test whether the mode
 - **Confounding strength**: Mean absolute correlation between intervention target and other variables
 - **Effect decay**: Query at multiple offsets after intervention (`--query-offsets 1 2 3 5 10`) to study how the causal effect propagates through lagged dependencies
 
+## Ground Truth and Evaluation Philosophy
+
+Our two evaluation settings have fundamentally different ground truths:
+
+**Synthetic TSCMs**: Ground truth is exact. We generate data from a known SCM, so the true interventional outcome `X_int[t, var]` and causal effect `X_int - X_obs` are available by construction. The oracle is the SCM simulator itself (RMSE = 0). The model's goal is to recover this from observational data alone.
+
+**CausalChamber (real-world)**: Ground truth is the actual sensor reading after a physical intervention. There is no analytical oracle — the true causal mechanisms (optics, electronics) are complex. Crucially, we only observe the factual outcome, not the counterfactual "what would have happened without the intervention." A naive time-series model can score well by extrapolating trends without any causal reasoning.
+
+To distinguish causal understanding from mere prediction, we report **confounding-aware metrics**:
+- **Naive RMSE**: Predicting the last observational value (assumes nothing changes)
+- **Lift over naive**: How much better the model is than this baseline. A model with genuine causal understanding should show positive lift, especially for large interventions.
+- **Effect-error correlation**: Correlation between prediction error and intervention magnitude. High correlation suggests the model struggles when interventions are strong — a sign of confounding bias.
+
 ## Training Modes
 
 ### Quantile head (recommended)

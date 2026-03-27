@@ -73,9 +73,17 @@ def main():
         if results.get("overall"):
             r = results["overall"]
             print(f"\nOverall: RMSE={r['rmse']:.4f}, MAE={r['mae']:.4f}, N={r['n_episodes']}")
+            print(f"  Naive (last obs) RMSE: {r.get('naive_rmse', float('nan')):.4f}")
+            print(f"  Lift over naive: {r.get('lift_over_naive', float('nan')):.1%}")
+            print(f"  Mean |intervention effect|: {r.get('intervention_effect', float('nan')):.4f}")
+            print(f"  Error-effect correlation: {r.get('effect_error_corr', float('nan')):.4f}")
 
+        print()
         for var, m in results.get("per_var", {}).items():
-            print(f"  {var}: RMSE={m['rmse']:.4f}, MAE={m['mae']:.4f}, N={m['n_episodes']}")
+            print(f"  {var}: RMSE={m['rmse']:.4f} MAE={m['mae']:.4f} "
+                  f"Naive={m.get('naive_rmse', float('nan')):.4f} "
+                  f"Lift={m.get('lift_over_naive', float('nan')):.1%} "
+                  f"N={m['n_episodes']}")
 
 
 if __name__ == "__main__":

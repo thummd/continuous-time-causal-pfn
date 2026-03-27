@@ -1,6 +1,7 @@
 """Zero-shot evaluation on CausalChamber."""
 
 import torch
+import numpy as np
 from typing import Dict, List, Optional, Tuple, Union
 
 from dotime.data.causal_chamber import CausalChamberLoader, LT_SENSORS
@@ -89,11 +90,13 @@ def evaluate_on_chamber(
     results = {"per_var": {}, "overall": {}}
     all_preds = []
     all_targets = []
+    all_last_obs = []
     all_outputs = []
 
     for qvar in query_vars:
         var_preds = []
         var_targets = []
+        var_last_obs = []
         var_outputs = []
 
         for ep in episodes:
@@ -110,16 +113,17 @@ def evaluate_on_chamber(
 
             var_preds.append(pred.cpu())
             var_targets.append(batch['Y_true_norm'].cpu())
+            var_last_obs.append(batch['Y_last_obs_norm'].cpu())
             var_outputs.append(output.cpu())
 
         if var_preds:
             preds_t = torch.cat(var_preds)
             targets_t = torch.cat(var_targets)
-            var_results = {
-                "rmse": compute_rmse(preds_t, targets_t),
-                "mae": compute_mae(preds_t, targets_t),
-                "n_episodes": len(var_preds),
-            }
+            last_obs_t = torch.cat(var_last_obs)
+            var_results = _compute_confounding_aware_metrics(
+                preds_t, targets_t, last_obs_t,
+            )
+            var_results["n_episodes"] = len(var_preds)
             if tau_levels is not None and has_bar:
                 outputs_t = torch.cat(var_outputs)
                 var_results["pinball_loss"] = compute_pinball_metric(
@@ -130,15 +134,16 @@ def evaluate_on_chamber(
             results["per_var"][qvar] = var_results
             all_preds.append(preds_t)
             all_targets.append(targets_t)
+            all_last_obs.append(last_obs_t)
 
     if all_preds:
         all_preds_t = torch.cat(all_preds)
         all_targets_t = torch.cat(all_targets)
-        results["overall"] = {
-            "rmse": compute_rmse(all_preds_t, all_targets_t),
-            "mae": compute_mae(all_preds_t, all_targets_t),
-            "n_episodes": len(all_preds_t),
-        }
+        all_last_obs_t = torch.cat(all_last_obs)
+        results["overall"] = _compute_confounding_aware_metrics(
+            all_preds_t, all_targets_t, all_last_obs_t,
+        )
+        results["overall"]["n_episodes"] = len(all_preds_t)
         if tau_levels is not None and has_bar and all_outputs:
             all_outputs_t = torch.cat(all_outputs)
             results["overall"]["pinball_loss"] = compute_pinball_metric(
@@ -147,3 +152,57 @@ def evaluate_on_chamber(
                 all_outputs_t, borders, all_targets_t, tau_levels))
 
     return results
+
+
+def _compute_confounding_aware_metrics(
+    preds: torch.Tensor,
+    targets: torch.Tensor,
+    last_obs: torch.Tensor,
+) -> Dict:
+    """Compute standard + confounding-aware metrics.
+
+    Parameters
+    ----------
+    preds : (N,) model predictions (normalized)
+    targets : (N,) ground truth post-intervention values (normalized)
+    last_obs : (N,) last observational value before intervention (normalized)
+        Acts as naive counterfactual: "what if nothing changed?"
+
+    Returns
+    -------
+    dict with:
+        rmse, mae: standard prediction metrics
+        naive_rmse: RMSE of naive baseline (predict last obs value)
+        lift_over_naive: 1 - (model_rmse / naive_rmse), >0 means model is better
+        intervention_effect: mean |target - last_obs| (how much things actually changed)
+        effect_corr: correlation between |prediction error| and |intervention effect|
+            High correlation = model struggles more when interventions are stronger
+            (suggests it's confounded by pre-intervention trends)
+    """
+    rmse = compute_rmse(preds, targets)
+    mae = compute_mae(preds, targets)
+    naive_rmse = compute_rmse(last_obs, targets)
+
+    lift = 1.0 - (rmse / naive_rmse) if naive_rmse > 1e-8 else 0.0
+
+    # How much the intervention actually changed the outcome
+    intervention_effect = (targets - last_obs).abs()
+    mean_effect = intervention_effect.mean().item()
+
+    # Correlation between prediction error and intervention magnitude
+    pred_errors = (preds - targets).abs()
+    if pred_errors.std() > 1e-8 and intervention_effect.std() > 1e-8:
+        effect_corr = float(np.corrcoef(
+            pred_errors.numpy(), intervention_effect.numpy()
+        )[0, 1])
+    else:
+        effect_corr = float('nan')
+
+    return {
+        "rmse": rmse,
+        "mae": mae,
+        "naive_rmse": naive_rmse,
+        "lift_over_naive": lift,
+        "intervention_effect": mean_effect,
+        "effect_error_corr": effect_corr,
+    }

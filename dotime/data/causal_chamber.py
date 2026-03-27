@@ -169,6 +169,10 @@ class CausalChamberLoader:
 
         Y_true_norm = (Y_true - means[query_idx]) / stds[query_idx]
 
+        # Last observational value for this query variable (naive counterfactual)
+        Y_last_obs = float(X_obs[-1, query_idx])
+        Y_last_obs_norm = (Y_last_obs - means[query_idx]) / stds[query_idx]
+
         return {
             'X_obs': torch.tensor(X_obs_padded).unsqueeze(0),           # (1, T, N_max)
             'X_obs_norm': torch.tensor(X_obs_norm, dtype=torch.float32).unsqueeze(0),
@@ -182,6 +186,7 @@ class CausalChamberLoader:
             'query_time': torch.tensor([1.0 + query_time_offset / T], dtype=torch.float32),
             'Y_true': torch.tensor([Y_true], dtype=torch.float32),
             'Y_true_norm': torch.tensor([Y_true_norm], dtype=torch.float32),
+            'Y_last_obs_norm': torch.tensor([Y_last_obs_norm], dtype=torch.float32),
             '_norm_means': torch.zeros(1, self.n_max),
             '_norm_stds': torch.ones(1, self.n_max),
         }
