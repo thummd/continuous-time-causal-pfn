@@ -87,6 +87,48 @@ def compute_pinball_metric(
 
 
 @torch.no_grad()
+def compute_crps_from_quantiles(
+    quantile_preds: torch.Tensor,
+    targets: torch.Tensor,
+    tau_levels: Union[torch.Tensor, List[float]],
+) -> float:
+    """Approximate CRPS from quantile predictions via numerical integration.
+
+    CRPS = ∫₀¹ 2·L_τ(y, q_τ) dτ ≈ Σᵢ 2·L_τᵢ(y, q_τᵢ)·Δτᵢ
+
+    Parameters
+    ----------
+    quantile_preds : (N, Q) predicted quantiles
+    targets : (N,) true values
+    tau_levels : (Q,) quantile levels
+
+    Returns
+    -------
+    mean CRPS (scalar)
+    """
+    if not isinstance(tau_levels, torch.Tensor):
+        tau_levels = torch.tensor(tau_levels, dtype=quantile_preds.dtype)
+
+    # Compute pinball loss per quantile
+    error = targets.unsqueeze(-1) - quantile_preds  # (N, Q)
+    tau = tau_levels.unsqueeze(0)  # (1, Q)
+    pinball = torch.where(error >= 0, tau * error, (tau - 1.0) * error)  # (N, Q)
+
+    # Numerical integration weights (trapezoid rule over [0, 1])
+    tau_sorted = tau_levels.sort().values
+    # Widths: half-intervals at boundaries, full intervals in between
+    widths = torch.zeros_like(tau_sorted)
+    widths[0] = (tau_sorted[0] + tau_sorted[1]) / 2
+    widths[-1] = 1.0 - (tau_sorted[-2] + tau_sorted[-1]) / 2
+    for i in range(1, len(tau_sorted) - 1):
+        widths[i] = (tau_sorted[i + 1] - tau_sorted[i - 1]) / 2
+
+    # CRPS = 2 * weighted sum of pinball losses
+    crps_per_sample = 2.0 * (pinball * widths.unsqueeze(0)).sum(dim=-1)  # (N,)
+    return crps_per_sample.mean().item()
+
+
+@torch.no_grad()
 def evaluate_model(model, dataloader, device="cpu", tau_levels=None) -> Dict[str, float]:
     """Evaluate model on a dataloader, returning metrics dict.
 

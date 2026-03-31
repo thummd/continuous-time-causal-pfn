@@ -67,8 +67,19 @@ class ExtendedCausalTimePrior:
         """Sample a time series length uniformly from t_range."""
         return self.rng.randint(self.t_range[0], self.t_range[1] + 1)
 
-    def generate_sample(self, T: Optional[int] = None) -> Dict[str, torch.Tensor]:
-        """Generate a single model-ready sample.
+    def generate_sample(
+        self, T: Optional[int] = None, n_queries: int = 1,
+    ) -> Dict[str, torch.Tensor]:
+        """Generate a single model-ready sample with one or more query points.
+
+        Parameters
+        ----------
+        T : int, optional
+            Time series length (sampled from t_range if None).
+        n_queries : int
+            Number of (query_target, query_time) pairs per trajectory.
+            When > 1, query_target/query_time/Y_true/Y_causal_effect
+            are tensors of shape (n_queries,) instead of scalars.
 
         Returns dict with:
             X_obs: (T, N_max) padded observational series
@@ -79,10 +90,11 @@ class ExtendedCausalTimePrior:
             intervention_value: scalar float
             intervention_time_start: scalar float in [0, 1]
             intervention_time_end: scalar float in [0, 1]
-            query_target: scalar int
-            query_time: scalar float in [0, 1]
-            Y_true: scalar float (ground truth)
-            num_vars: scalar int (actual number of variables)
+            query_target: scalar int or (n_queries,) ints
+            query_time: scalar float or (n_queries,) floats
+            Y_true: scalar float or (n_queries,) floats
+            Y_causal_effect: scalar float or (n_queries,) floats
+            num_vars: scalar int
         """
         if T is None:
             T = self.sample_T()
@@ -119,27 +131,39 @@ class ExtendedCausalTimePrior:
 
         intervention_type = INTERVENTION_TYPE_MAP[intervention.intervention_type]
 
-        # Query sampling (downstream with probability downstream_prob)
-        is_downstream = self.rng.rand() < self.downstream_prob
-        if is_downstream and N > 1:
-            other_vars = [v for v in range(N) if v != intervention_target]
-            query_target = int(self.rng.choice(other_vars))
-            query_time_idx = min(
-                int(time_start + self.rng.randint(1, 6)),
-                T - 1,
-            )
-        else:
-            query_target = intervention_target
-            query_time_idx = min(
-                int(np.mean(intervention.times)),
-                T - 1,
-            )
+        # Query sampling
+        query_targets = []
+        query_time_idxs = []
+        for _ in range(n_queries):
+            is_downstream = self.rng.rand() < self.downstream_prob
+            if is_downstream and N > 1:
+                other_vars = [v for v in range(N) if v != intervention_target]
+                qt = int(self.rng.choice(other_vars))
+                qti = min(int(time_start + self.rng.randint(1, 6)), T - 1)
+            else:
+                qt = intervention_target
+                qti = min(int(np.mean(intervention.times)), T - 1)
+            query_targets.append(qt)
+            query_time_idxs.append(qti)
 
         # Ground truth: raw interventional value and causal effect
-        y_int = float(X_int_padded[query_time_idx, query_target].item())
-        y_obs = float(X_obs_padded[query_time_idx, query_target].item())
-        Y_true = y_int
-        Y_causal_effect = y_int - y_obs
+        y_trues = [float(X_int_padded[qti, qt].item())
+                   for qt, qti in zip(query_targets, query_time_idxs)]
+        y_obs_vals = [float(X_obs_padded[qti, qt].item())
+                      for qt, qti in zip(query_targets, query_time_idxs)]
+        y_effects = [yi - yo for yi, yo in zip(y_trues, y_obs_vals)]
+
+        # Flatten to scalars if n_queries == 1 (backwards compatible)
+        if n_queries == 1:
+            query_target_t = torch.tensor(query_targets[0], dtype=torch.long)
+            query_time_t = torch.tensor(query_time_idxs[0] / T, dtype=torch.float32)
+            y_true_t = torch.tensor(y_trues[0], dtype=torch.float32)
+            y_effect_t = torch.tensor(y_effects[0], dtype=torch.float32)
+        else:
+            query_target_t = torch.tensor(query_targets, dtype=torch.long)
+            query_time_t = torch.tensor([qti / T for qti in query_time_idxs], dtype=torch.float32)
+            y_true_t = torch.tensor(y_trues, dtype=torch.float32)
+            y_effect_t = torch.tensor(y_effects, dtype=torch.float32)
 
         return {
             'X_obs': X_obs_padded,                                    # (T, N_max)
@@ -150,10 +174,10 @@ class ExtendedCausalTimePrior:
             'intervention_value': torch.tensor(intervention_value, dtype=torch.float32),
             'intervention_time_start': torch.tensor(time_start / T, dtype=torch.float32),
             'intervention_time_end': torch.tensor(time_end / T, dtype=torch.float32),
-            'query_target': torch.tensor(query_target, dtype=torch.long),
-            'query_time': torch.tensor(query_time_idx / T, dtype=torch.float32),
-            'Y_true': torch.tensor(Y_true, dtype=torch.float32),
-            'Y_causal_effect': torch.tensor(Y_causal_effect, dtype=torch.float32),
+            'query_target': query_target_t,
+            'query_time': query_time_t,
+            'Y_true': y_true_t,
+            'Y_causal_effect': y_effect_t,
             'num_vars': torch.tensor(N, dtype=torch.long),
         }
 

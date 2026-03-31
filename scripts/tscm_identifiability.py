@@ -63,13 +63,14 @@ def verify_data_generation(n_samples: int = 10, T: int = 50):
                 continue
             int_target = valid_targets[0]
 
-            # Create intervention: single-step do(A_t) by default
+            # Create intervention: single-step do(A_t) with diverse values
             int_times = [max(0, T - 5)]
+            int_value = float(torch.randn(1, generator=gen).item() * 2.0)
             intervention = InterventionSpec(
                 targets=[int_target],
                 times=int_times,
                 intervention_type=InterventionType.HARD,
-                values=1.0,
+                values=int_value,
             )
 
             X_int = scm.sample_interventional(
@@ -150,6 +151,7 @@ def compute_confounding_strength(X_obs, hidden_vars, int_target, N):
 def _evaluate_single_query(
     model, X_obs, X_int, X_obs_padded, X_norm, means, stds,
     variable_mask, int_target, int_times, q_idx, query_time_idx, T, device,
+    int_value: float = 1.0,
 ):
     """Evaluate a single query (one variable at one time offset)."""
     time_start = min(int_times) / T
@@ -160,12 +162,15 @@ def _evaluate_single_query(
     y_true_norm = (y_int - means[q_idx].item()) / stds[q_idx].item()
     causal_effect_norm = (y_int - y_obs) / stds[q_idx].item()
 
+    # Normalize intervention value using the intervened variable's stats
+    int_value_norm = (int_value - means[int_target].item()) / stds[int_target].item()
+
     batch = {
         'X_obs_norm': X_norm.unsqueeze(0).to(device),
         'variable_mask': variable_mask.unsqueeze(0).to(device),
         'intervention_target': torch.tensor([int_target], dtype=torch.long, device=device),
         'intervention_type': torch.tensor([0], dtype=torch.long, device=device),
-        'intervention_value': torch.tensor([1.0], dtype=torch.float32, device=device),
+        'intervention_value': torch.tensor([int_value_norm], dtype=torch.float32, device=device),
         'intervention_time_start': torch.tensor([time_start], dtype=torch.float32, device=device),
         'intervention_time_end': torch.tensor([time_end], dtype=torch.float32, device=device),
         'query_target': torch.tensor([q_idx], dtype=torch.long, device=device),
@@ -270,11 +275,16 @@ def evaluate_structure(
             int_times = list(range(max(0, T - 10), T))
         else:
             int_times = [max(0, T - 5)]
+
+        # Sample intervention value from training distribution N(0, 2)
+        # to match CTP's hard intervention sampling and avoid positivity issues
+        int_value = float(torch.randn(1, generator=gen).item() * 2.0)
+
         intervention = InterventionSpec(
             targets=[int_target],
             times=int_times,
             intervention_type=InterventionType.HARD,
-            values=1.0,
+            values=int_value,
         )
 
         X_int = scm.sample_interventional(
@@ -307,7 +317,7 @@ def evaluate_structure(
                 rec = _evaluate_single_query(
                     model, X_obs, X_int, X_obs_padded, X_norm, means, stds,
                     variable_mask, int_target, int_times, q_idx, query_time_idx,
-                    T, device,
+                    T, device, int_value=int_value,
                 )
                 rec['offset'] = offset
                 rec['q_idx'] = q_idx

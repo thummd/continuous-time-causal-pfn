@@ -36,6 +36,8 @@ def main():
                         help="Target: 'Y_true' (raw interventional) or 'Y_causal_effect' (int - obs)")
     parser.add_argument("--observational-only", action="store_true",
                         help="Ablation: zero out intervention context (predictive baseline)")
+    parser.add_argument("--n-queries", type=int, default=1,
+                        help="Number of query points per trajectory (>1 = dense supervision)")
     args = parser.parse_args()
 
     # Load config
