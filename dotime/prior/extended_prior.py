@@ -138,20 +138,21 @@ class ExtendedCausalTimePrior:
 
         intervention_type = INTERVENTION_TYPE_MAP[intervention.intervention_type]
 
-        # Query sampling
+        # Query sampling — aligned with identifiability theory:
+        # P(Y_t | do(A_t), H_{t-1},...,H_{t-K})
+        # All queries at intervention time t, for non-intervention variables.
         query_targets = []
         query_time_idxs = []
+        other_vars = [v for v in range(N) if v != intervention_target]
+        int_time = min(int(np.mean(intervention.times)), T - 1)
+
         for _ in range(n_queries):
-            is_downstream = self.rng.rand() < self.downstream_prob
-            if is_downstream and N > 1:
-                other_vars = [v for v in range(N) if v != intervention_target]
+            if other_vars:
                 qt = int(self.rng.choice(other_vars))
-                qti = min(int(time_start + self.rng.randint(1, 6)), T - 1)
             else:
                 qt = intervention_target
-                qti = min(int(np.mean(intervention.times)), T - 1)
             query_targets.append(qt)
-            query_time_idxs.append(qti)
+            query_time_idxs.append(int_time)
 
         # Ground truth: raw interventional value and causal effect
         y_trues = [float(X_int_padded[qti, qt].item())
