@@ -108,8 +108,15 @@ class ExtendedCausalTimePrior:
 
         N = X_obs.shape[1]
 
+        # Causal masking: zero out X_obs at and after intervention onset
+        # so the model only sees pre-intervention observational data.
+        # This prevents information leakage from post-intervention timesteps.
+        int_onset = min(intervention.times)
+        X_obs_masked = X_obs.clone()
+        X_obs_masked[int_onset:] = 0.0
+
         # Pad to N_max
-        X_obs_padded = pad_to_max_nodes(X_obs, self.n_max)
+        X_obs_padded = pad_to_max_nodes(X_obs_masked, self.n_max)
         X_int_padded = pad_to_max_nodes(X_int, self.n_max)
 
         # Variable mask
