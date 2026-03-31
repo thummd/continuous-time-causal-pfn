@@ -189,19 +189,41 @@ class ExtendedCausalTimePrior:
         }
 
     def generate_batch(
-        self, batch_size: int, T: Optional[int] = None, **kwargs,
+        self, batch_size: int, T: Optional[int] = None,
+        n_queries: int = 1, **kwargs,
     ) -> Dict[str, torch.Tensor]:
         """Generate a batch of model-ready samples.
 
         All samples in a batch share the same T (sampled once if not provided).
-        Returns dict with batched tensors.
+        When n_queries > 1, each trajectory produces K query points. The batch
+        is flattened to B*K samples with shared fields (X_obs, intervention spec)
+        repeated, so the model forward pass works unchanged.
+
+        Returns dict with batched tensors of shape (B*K, ...).
         """
         if T is None:
             T = self.sample_T()
 
-        samples = [self.generate_sample(T=T) for _ in range(batch_size)]
+        samples = [self.generate_sample(T=T, n_queries=n_queries)
+                   for _ in range(batch_size)]
 
-        return {
-            key: torch.stack([s[key] for s in samples])
-            for key in samples[0].keys()
-        }
+        if n_queries == 1:
+            return {
+                key: torch.stack([s[key] for s in samples])
+                for key in samples[0].keys()
+            }
+
+        # Flatten: each sample with K queries becomes K rows in the batch.
+        # Shared fields (X_obs, variable_mask, intervention_*) are repeated K times.
+        # Query fields (query_target, query_time, Y_true, Y_causal_effect) have shape (K,).
+        query_keys = {'query_target', 'query_time', 'Y_true', 'Y_causal_effect'}
+        batch = {}
+        for key in samples[0].keys():
+            if key in query_keys:
+                # (B, K) -> (B*K,)
+                batch[key] = torch.cat([s[key] for s in samples])
+            else:
+                # (B, ...) -> (B*K, ...) via repeat_interleave
+                stacked = torch.stack([s[key] for s in samples])
+                batch[key] = stacked.repeat_interleave(n_queries, dim=0)
+        return batch

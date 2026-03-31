@@ -84,6 +84,7 @@ def main():
         tau_levels=args.tau_levels,
         target_key=args.target_key,
         observational_only=args.observational_only,
+        n_queries=args.n_queries,
     )
 
 

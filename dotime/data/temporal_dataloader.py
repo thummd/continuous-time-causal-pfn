@@ -33,6 +33,7 @@ class TemporalInterventionDataLoader:
         num_workers: int = 0,
         prefetch: int = 2,
         target_key: str = "Y_true",
+        n_queries: int = 1,
     ):
         self.num_steps = num_steps
         self.batch_size = batch_size
@@ -41,6 +42,7 @@ class TemporalInterventionDataLoader:
         self.num_workers = num_workers
         self.prefetch = prefetch
         self.target_key = target_key
+        self.n_queries = n_queries
 
         self.prior = ExtendedCausalTimePrior(
             n_max=n_max,
@@ -87,6 +89,7 @@ class TemporalInterventionDataLoader:
         """Generate a single batch."""
         batch = self.prior.generate_batch(
             self.batch_size, num_workers=self.num_workers,
+            n_queries=self.n_queries,
         )
 
         if self.normalize:

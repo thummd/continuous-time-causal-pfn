@@ -98,6 +98,7 @@ def train(
     tau_levels: Optional[List[float]] = None,
     target_key: str = "Y_true",
     observational_only: bool = False,
+    n_queries: int = 1,
 ):
     """Full training pipeline for Do-Over-Time-PFN."""
 
@@ -106,6 +107,8 @@ def train(
     print("=" * 70)
     print(f"   Head type: {head_type}")
     print(f"   Target: {target_key}")
+    if n_queries > 1:
+        print(f"   Dense supervision: {n_queries} queries per trajectory")
     if observational_only:
         print("   ABLATION: observational-only (intervention context zeroed)")
 
@@ -168,6 +171,7 @@ def train(
         num_workers=num_workers,
         prefetch=prefetch,
         target_key=target_key,
+        n_queries=n_queries,
     )
 
     # Eval loader (fixed seed for consistent evaluation)
