@@ -159,8 +159,8 @@ def _evaluate_single_query(
 
     y_int = X_int[query_time_idx, q_idx].item()
     y_obs = X_obs[query_time_idx, q_idx].item() if query_time_idx < X_obs.shape[0] else 0.0
-    y_true_norm = (y_int - means[q_idx].item()) / stds[q_idx].item()
-    causal_effect_norm = (y_int - y_obs) / stds[q_idx].item()
+    y_true_norm = max(-10.0, min(10.0, (y_int - means[q_idx].item()) / stds[q_idx].item()))
+    causal_effect_norm = max(-10.0, min(10.0, (y_int - y_obs) / stds[q_idx].item()))
 
     # Normalize intervention value using the intervened variable's stats
     int_value_norm = (int_value - means[int_target].item()) / stds[int_target].item()
@@ -291,6 +291,9 @@ def evaluate_structure(
             T=T, intervention=intervention, burn_in=30, generator=gen,
         )
         if X_int.abs().max() > 900:
+            continue
+        # Skip all-zero samples (diverged SCMs that returned zeros)
+        if X_obs.abs().max() < 1e-6 or X_int.abs().max() < 1e-6:
             continue
 
         X_obs_padded = pad_to_max_nodes(X_obs, n_max)
