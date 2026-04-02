@@ -99,6 +99,7 @@ def train(
     target_key: str = "Y_true",
     observational_only: bool = False,
     n_queries: int = 1,
+    query_mode: str = "single",
 ):
     """Full training pipeline for Do-Over-Time-PFN."""
 
@@ -172,6 +173,7 @@ def train(
         prefetch=prefetch,
         target_key=target_key,
         n_queries=n_queries,
+        query_mode=query_mode,
     )
 
     # Eval loader (fixed seed for consistent evaluation)
@@ -200,7 +202,17 @@ def train(
             batch['intervention_time_start'] = torch.zeros_like(batch['intervention_time_start'])
             batch['intervention_time_end'] = torch.zeros_like(batch['intervention_time_end'])
 
-        output = model(batch)
+        # Encoder caching: compute h_vars once per trajectory, reuse for all queries
+        if '_traj_idx' in batch:
+            h_vars = model.encode(batch)  # (B, N_max, E) — B unique trajectories
+            traj_idx = batch['_traj_idx']  # (B_total,) maps queries to trajectories
+            h_vars_expanded = h_vars[traj_idx]  # (B_total, N_max, E)
+            # Expand variable_mask to match queries
+            query_batch = {k: v for k, v in batch.items() if k not in ('X_obs_norm', '_traj_idx')}
+            query_batch['variable_mask'] = batch['variable_mask'][traj_idx]
+            output = model.query(h_vars_expanded, query_batch)
+        else:
+            output = model(batch)
 
         # Skip batches with extreme normalized targets (normalization edge case)
         y_max = batch['Y_true_norm'].abs().max().item()

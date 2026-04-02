@@ -38,6 +38,9 @@ def main():
                         help="Ablation: zero out intervention context (predictive baseline)")
     parser.add_argument("--n-queries", type=int, default=1,
                         help="Number of query points per trajectory (>1 = dense supervision)")
+    parser.add_argument("--query-mode", type=str, default="single",
+                        choices=["single", "all_pairs"],
+                        help="Query mode: 'single' (random) or 'all_pairs' (all outcome vars)")
     args = parser.parse_args()
 
     # Load config
@@ -85,6 +88,7 @@ def main():
         target_key=args.target_key,
         observational_only=args.observational_only,
         n_queries=args.n_queries,
+        query_mode=args.query_mode,
     )
 
 

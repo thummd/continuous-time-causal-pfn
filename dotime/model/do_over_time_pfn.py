@@ -1,9 +1,13 @@
 """Do-Over-Time-PFN: Main model for temporal causal effect estimation.
 
-Two-stage architecture:
-1. Per-variable temporal encoding via GatedDeltaProduct or Transformer
-2. Cross-variable causal reasoning via attention with intervention/query context
-3. Output head: bar distribution (1000 buckets) or quantile predictions
+Three-stage architecture:
+1. Per-variable temporal encoding (trajectory-specific, query-agnostic)
+2. Cross-variable causal reasoning with intervention/query context
+3. Output head: quantile predictions or bar distribution
+
+The encoder (Stage 1) is the expensive part (~90% of compute) and depends
+only on X_obs — NOT on the intervention or query. Use encode() + query()
+to compute the encoder ONCE per trajectory and reuse for many queries.
 """
 
 import torch
@@ -72,33 +76,34 @@ class DoOverTimePFN(nn.Module):
         """Return the active output head."""
         return self.quantile_head if self.head_type == "quantile" else self.bar_head
 
-    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Forward pass.
+    def encode(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Stage 1: Encode trajectory (expensive, compute once per trajectory).
 
         Parameters
         ----------
-        batch : dict with keys:
-            X_obs_norm: (B, T, N_max)
-            variable_mask: (B, N_max)
-            intervention_target: (B,)
-            intervention_type: (B,)
-            intervention_value: (B,)
-            intervention_time_start: (B,)
-            intervention_time_end: (B,)
-            query_target: (B,)
-            query_time: (B,)
+        batch : dict with X_obs_norm: (B, T, N_max), variable_mask: (B, N_max)
 
         Returns
         -------
-        output : (B, n_buckets) logits or (B, Q) quantile predictions
+        h_vars : (B, N_max, E) per-variable temporal representations
         """
-        # Stage 1: Per-variable temporal encoding
-        h_vars = self.temporal_encoder(
+        return self.temporal_encoder(
             batch['X_obs_norm'],
             batch['variable_mask'],
-        )  # (B, N_max, E)
+        )
 
-        # Stage 2: Cross-variable causal reasoning
+    def query(self, h_vars: torch.Tensor, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Stage 2+3: Query with intervention/outcome spec (cheap, run many times).
+
+        Parameters
+        ----------
+        h_vars : (B, N_max, E) from encode() — can be expanded via repeat_interleave
+        batch : dict with intervention_*, query_*, variable_mask (all shape (B,))
+
+        Returns
+        -------
+        output : (B, Q) quantile predictions or (B, n_buckets) logits
+        """
         h_causal = self.cross_variable_mixer(
             h_vars=h_vars,
             intervention_target=batch['intervention_target'],
@@ -109,10 +114,22 @@ class DoOverTimePFN(nn.Module):
             query_target=batch['query_target'],
             query_time=batch['query_time'],
             variable_mask=batch['variable_mask'],
-        )  # (B, E)
-
-        # Stage 3: Output head
+        )
         return self.head(h_causal)
+
+    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Full forward pass (encode + query). Use encode()+query() for caching.
+
+        Parameters
+        ----------
+        batch : dict with X_obs_norm, variable_mask, intervention_*, query_*
+
+        Returns
+        -------
+        output : (B, Q) or (B, n_buckets)
+        """
+        h_vars = self.encode(batch)
+        return self.query(h_vars, batch)
 
     def loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute loss for a batch."""
@@ -120,11 +137,6 @@ class DoOverTimePFN(nn.Module):
         return self.head.loss(output, batch['Y_true_norm'])
 
     def predict(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Predict mean values for a batch.
-
-        Returns
-        -------
-        predictions : (B,) predicted mean values (normalized)
-        """
+        """Predict mean values for a batch."""
         output = self.forward(batch)
         return self.head.predict_mean(output)

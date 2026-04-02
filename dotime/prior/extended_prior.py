@@ -69,6 +69,7 @@ class ExtendedCausalTimePrior:
 
     def generate_sample(
         self, T: Optional[int] = None, n_queries: int = 1,
+        query_mode: str = "single",
     ) -> Dict[str, torch.Tensor]:
         """Generate a single model-ready sample with one or more query points.
 
@@ -140,19 +141,27 @@ class ExtendedCausalTimePrior:
 
         # Query sampling — aligned with identifiability theory:
         # P(Y_t | do(A_t), H_{t-1},...,H_{t-K})
-        # All queries at intervention time t, for non-intervention variables.
-        query_targets = []
-        query_time_idxs = []
         other_vars = [v for v in range(N) if v != intervention_target]
         int_time = min(int(np.mean(intervention.times)), T - 1)
 
-        for _ in range(n_queries):
-            if other_vars:
-                qt = int(self.rng.choice(other_vars))
-            else:
-                qt = intervention_target
-            query_targets.append(qt)
-            query_time_idxs.append(int_time)
+        query_targets = []
+        query_time_idxs = []
+
+        if query_mode == "all_pairs" and other_vars:
+            # Query ALL non-intervention variables at intervention time.
+            # This forces the model to learn the full causal structure.
+            for qt in other_vars:
+                query_targets.append(qt)
+                query_time_idxs.append(int_time)
+        else:
+            # Single mode: random queries at intervention time
+            for _ in range(n_queries):
+                if other_vars:
+                    qt = int(self.rng.choice(other_vars))
+                else:
+                    qt = intervention_target
+                query_targets.append(qt)
+                query_time_idxs.append(int_time)
 
         # Ground truth: raw interventional value and causal effect
         y_trues = [float(X_int_padded[qti, qt].item())
@@ -161,8 +170,9 @@ class ExtendedCausalTimePrior:
                       for qt, qti in zip(query_targets, query_time_idxs)]
         y_effects = [yi - yo for yi, yo in zip(y_trues, y_obs_vals)]
 
-        # Flatten to scalars if n_queries == 1 (backwards compatible)
-        if n_queries == 1:
+        # Flatten to scalars if single query (backwards compatible)
+        actual_n_queries = len(query_targets)
+        if actual_n_queries == 1:
             query_target_t = torch.tensor(query_targets[0], dtype=torch.long)
             query_time_t = torch.tensor(query_time_idxs[0] / T, dtype=torch.float32)
             y_true_t = torch.tensor(y_trues[0], dtype=torch.float32)
@@ -191,59 +201,101 @@ class ExtendedCausalTimePrior:
 
     def generate_batch(
         self, batch_size: int, T: Optional[int] = None,
-        n_queries: int = 1, num_workers: int = 0, **kwargs,
+        n_queries: int = 1, num_workers: int = 0,
+        query_mode: str = "single", **kwargs,
     ) -> Dict[str, torch.Tensor]:
         """Generate a batch of model-ready samples.
 
         All samples in a batch share the same T (sampled once if not provided).
-        When n_queries > 1, each trajectory produces K query points. The batch
-        is flattened to B*K samples with shared fields (X_obs, intervention spec)
-        repeated, so the model forward pass works unchanged.
-        When num_workers > 0, samples are generated in parallel via multiprocessing.
+        Multi-query batches include a '_traj_idx' field that maps each query
+        to its source trajectory (for encoder caching).
 
-        Returns dict with batched tensors of shape (B*K, ...).
+        Parameters
+        ----------
+        query_mode : "single" (random queries) or "all_pairs" (all outcome vars)
+
+        Returns dict with:
+            X_obs, variable_mask: (B, ...) unique trajectories
+            intervention_*, query_*, Y_*: (B_total,) per-query (B_total = sum of queries)
+            _traj_idx: (B_total,) index into trajectory dimension
         """
         if T is None:
             T = self.sample_T()
 
         if num_workers > 0:
-            samples = self._generate_parallel(batch_size, T, n_queries, num_workers)
+            samples = self._generate_parallel(batch_size, T, n_queries, num_workers, query_mode)
         else:
-            samples = [self.generate_sample(T=T, n_queries=n_queries)
+            samples = [self.generate_sample(T=T, n_queries=n_queries, query_mode=query_mode)
                        for _ in range(batch_size)]
 
-        return self._collate_batch(samples, n_queries)
+        return self._collate_batch(samples)
 
-    def _generate_parallel(self, batch_size, T, n_queries, num_workers):
+    def _generate_parallel(self, batch_size, T, n_queries, num_workers, query_mode):
         """Generate samples in parallel using multiprocessing (fork)."""
         import multiprocessing as mp
         ctx = mp.get_context("fork")
-        args = [(self, T, n_queries)] * batch_size
+        args = [(self, T, n_queries, query_mode)] * batch_size
         with ctx.Pool(processes=min(num_workers, batch_size)) as pool:
             samples = pool.map(_generate_sample_worker, args)
         return samples
 
     @staticmethod
-    def _collate_batch(samples, n_queries):
-        if n_queries == 1:
+    def _collate_batch(samples):
+        """Collate samples into a batch with _traj_idx for encoder caching.
+
+        Trajectory-level fields (X_obs, variable_mask) are stacked to (B, ...).
+        Query-level fields are concatenated to (B_total,) with _traj_idx mapping
+        each query back to its trajectory.
+        """
+        query_keys = {'query_target', 'query_time', 'Y_true', 'Y_causal_effect'}
+        # Check if any sample has multi-query (tensor with dim > 0 for query fields)
+        is_multi = any(s['query_target'].dim() > 0 for s in samples)
+
+        if not is_multi:
+            # All scalar queries — simple stack, no _traj_idx needed
             return {
                 key: torch.stack([s[key] for s in samples])
                 for key in samples[0].keys()
             }
 
-        # Flatten: each sample with K queries becomes K rows in the batch.
-        query_keys = {'query_target', 'query_time', 'Y_true', 'Y_causal_effect'}
+        # Multi-query: build _traj_idx and separate trajectory vs query fields
         batch = {}
-        for key in samples[0].keys():
-            if key in query_keys:
-                batch[key] = torch.cat([s[key] for s in samples])
-            else:
-                stacked = torch.stack([s[key] for s in samples])
-                batch[key] = stacked.repeat_interleave(n_queries, dim=0)
+        traj_indices = []
+        intervention_keys = {'intervention_target', 'intervention_type',
+                             'intervention_value', 'intervention_time_start',
+                             'intervention_time_end'}
+
+        # Stack trajectory-level fields (unique per trajectory)
+        traj_keys = {k for k in samples[0].keys() if k not in query_keys and k not in intervention_keys}
+        for key in traj_keys:
+            batch[key] = torch.stack([s[key] for s in samples])
+
+        # Build _traj_idx and concatenate query + intervention fields
+        for i, s in enumerate(samples):
+            nq = s['query_target'].numel()
+            traj_indices.append(torch.full((nq,), i, dtype=torch.long))
+        batch['_traj_idx'] = torch.cat(traj_indices)
+
+        for key in query_keys:
+            parts = []
+            for s in samples:
+                v = s[key]
+                parts.append(v.unsqueeze(0) if v.dim() == 0 else v)
+            batch[key] = torch.cat(parts)
+
+        # Intervention fields: repeat per query count
+        for key in intervention_keys:
+            parts = []
+            for s in samples:
+                nq = s['query_target'].numel()
+                v = s[key]
+                parts.append(v.unsqueeze(0).expand(nq) if v.dim() == 0 else v)
+            batch[key] = torch.cat(parts)
+
         return batch
 
 
 def _generate_sample_worker(args):
     """Top-level function for multiprocessing Pool.map (must be picklable)."""
-    prior, T, n_queries = args
-    return prior.generate_sample(T=T, n_queries=n_queries)
+    prior, T, n_queries, query_mode = args
+    return prior.generate_sample(T=T, n_queries=n_queries, query_mode=query_mode)
