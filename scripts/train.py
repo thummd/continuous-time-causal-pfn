@@ -41,6 +41,11 @@ def main():
     parser.add_argument("--query-mode", type=str, default="single",
                         choices=["single", "all_pairs"],
                         help="Query mode: 'single' (random) or 'all_pairs' (all outcome vars)")
+    parser.add_argument("--n-mixer-layers", type=int, default=1,
+                        help="Number of stacked cross-attention layers in mixer (1=default, 3=deep)")
+    parser.add_argument("--intervention-source", type=str, default="prior",
+                        choices=["prior", "observed"],
+                        help="Intervention value source: 'prior' (N(0,2)) or 'observed' (from X_obs)")
     args = parser.parse_args()
 
     # Load config
@@ -89,6 +94,8 @@ def main():
         observational_only=args.observational_only,
         n_queries=args.n_queries,
         query_mode=args.query_mode,
+        n_mixer_layers=args.n_mixer_layers,
+        intervention_source=args.intervention_source,
     )
 
 

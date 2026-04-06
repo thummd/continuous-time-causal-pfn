@@ -46,10 +46,12 @@ class ExtendedCausalTimePrior:
         seed: int = 42,
         chain_prob: float = 0.15,
         regime_switching_prob: float = 0.15,
+        intervention_source: str = "prior",
     ):
         self.n_max = n_max
         self.t_range = t_range
         self.downstream_prob = downstream_prob
+        self.intervention_source = intervention_source
 
         config = {
             'N_max': n_max_prior,
@@ -131,11 +133,18 @@ class ExtendedCausalTimePrior:
 
         # Intervention value (scalar representation)
         if callable(intervention.values):
-            # For time-varying: evaluate at midpoint
             mid_time = (time_start + time_end) // 2
             intervention_value = float(intervention.values(mid_time))
         else:
             intervention_value = float(intervention.values)
+
+        # Override intervention value with observed-scale value if requested.
+        # The CTP simulation already used its own value for X_int generation;
+        # here we replace what the MODEL sees to ensure plausible magnitudes.
+        if self.intervention_source == "observed":
+            pre_int = X_obs[:int_onset, intervention_target]
+            if pre_int.numel() > 0 and pre_int.std() > 1e-4:
+                intervention_value = float(pre_int[self.rng.randint(len(pre_int))].item())
 
         intervention_type = INTERVENTION_TYPE_MAP[intervention.intervention_type]
 

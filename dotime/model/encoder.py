@@ -120,6 +120,10 @@ class TemporalEncoder(nn.Module):
         """
         B, T, N = X_obs.shape
 
+        # Time mask: which timesteps have data (pre-intervention, non-zero)
+        # (B, T) — True for timesteps with any non-zero variable
+        time_mask = (X_obs.abs().sum(dim=-1) > 0)  # (B, T)
+
         # Embed per-variable: (B, T, N) -> (B, T, N, 1) -> (B, T, N, E)
         x = self.expand_values(X_obs.unsqueeze(-1))  # (B, T, N, E)
 
@@ -136,8 +140,11 @@ class TemporalEncoder(nn.Module):
         else:
             x = self._forward_transformer(x)
 
-        # Pool over time: (B*N, T, E) -> (B*N, E)
-        h = x.mean(dim=1)
+        # Mask-aware pool: average only over non-zero (pre-intervention) timesteps
+        # Expand time_mask from (B, T) to (B*N, T, 1) for broadcasting
+        tm = time_mask.unsqueeze(1).expand(B, N, T)  # (B, N, T)
+        tm = tm.reshape(B * N, T).unsqueeze(-1)      # (B*N, T, 1)
+        h = (x * tm).sum(dim=1) / tm.sum(dim=1).clamp(min=1)  # (B*N, E)
 
         # Reshape: (B*N, E) -> (B, N, E)
         h = h.view(B, N, self.embed_size)

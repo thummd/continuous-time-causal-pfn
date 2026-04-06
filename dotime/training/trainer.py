@@ -100,6 +100,8 @@ def train(
     observational_only: bool = False,
     n_queries: int = 1,
     query_mode: str = "single",
+    n_mixer_layers: int = 1,
+    intervention_source: str = "prior",
 ):
     """Full training pipeline for Do-Over-Time-PFN."""
 
@@ -138,6 +140,7 @@ def train(
         encoder_config=encoder_config,
         head_type=head_type,
         tau_levels=tau_levels,
+        n_mixer_layers=n_mixer_layers,
     )
     if head_type == "bar":
         model.bar_head.set_bar_distribution(bar_dist, borders.to(device))
@@ -174,6 +177,7 @@ def train(
         target_key=target_key,
         n_queries=n_queries,
         query_mode=query_mode,
+        intervention_source=intervention_source,
     )
 
     # Eval loader (fixed seed for consistent evaluation)
@@ -280,6 +284,7 @@ def train(
                         'n_buckets': n_buckets, 'encoder_backend': encoder_backend,
                         'head_type': head_type,
                         'tau_levels': tau_levels,
+                        'n_mixer_layers': n_mixer_layers,
                     },
                 }, save_path)
 

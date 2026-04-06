@@ -35,6 +35,7 @@ class TemporalInterventionDataLoader:
         target_key: str = "Y_true",
         n_queries: int = 1,
         query_mode: str = "single",
+        intervention_source: str = "prior",
     ):
         self.num_steps = num_steps
         self.batch_size = batch_size
@@ -53,6 +54,7 @@ class TemporalInterventionDataLoader:
             burn_in=burn_in,
             downstream_prob=downstream_prob,
             seed=seed,
+            intervention_source=intervention_source,
         )
 
     def __len__(self) -> int:

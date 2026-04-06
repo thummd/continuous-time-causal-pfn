@@ -17,7 +17,7 @@ from dotime.prior.tscm_sampler import TSCMSampler, TSCMStructure
 from dotime.prior.extended_prior import pad_to_max_nodes
 
 
-def verify_data_generation(n_samples: int = 10, T: int = 50):
+def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
     """Verify that all TSCM structures generate valid data.
 
     Checks: shapes, finite values, hidden variable masking, and
@@ -33,7 +33,7 @@ def verify_data_generation(n_samples: int = 10, T: int = 50):
 
     for structure in TSCMStructure:
         print(f"\n--- {structure.value} ---")
-        sampler = TSCMSampler(structure, max_lag=1)
+        sampler = TSCMSampler(structure, max_lag=max_lag)
         hidden_vars = sampler.get_hidden_vars()
         print(f"  Hidden variables: {hidden_vars if hidden_vars else 'none'}")
 
@@ -228,6 +228,7 @@ def evaluate_structure(
     device: str = "cpu",
     multi_step: bool = False,
     query_offsets: list = None,
+    max_lag: int = 1,
 ):
     """Evaluate model on a specific causal structure.
 
@@ -244,7 +245,7 @@ def evaluate_structure(
     if query_offsets is None:
         query_offsets = [3]
 
-    sampler = TSCMSampler(structure, max_lag=1)
+    sampler = TSCMSampler(structure, max_lag=max_lag)
     hidden_vars = sampler.get_hidden_vars()
 
     gen = torch.Generator().manual_seed(42)
@@ -389,10 +390,12 @@ def main():
     parser.add_argument("--query-offsets", type=int, nargs="+", default=[3],
                         help="Time offsets after intervention to query (default: 3). "
                              "Use e.g. '1 2 3 5 10' to study effect decay.")
+    parser.add_argument("--max-lag", type=int, default=1,
+                        help="Max lag K for TSCM structures (1=Markov, 2-3 for higher-order)")
     args = parser.parse_args()
 
     if args.verify_only:
-        verify_data_generation(n_samples=args.n_samples)
+        verify_data_generation(n_samples=args.n_samples, max_lag=args.max_lag)
         return
 
     if args.checkpoint is None:
@@ -427,6 +430,7 @@ def main():
         results = evaluate_structure(
             model, structure, n_samples=args.n_samples, device=args.device,
             multi_step=args.multi_step, query_offsets=args.query_offsets,
+            max_lag=args.max_lag,
         )
         all_results[structure.value] = results
 

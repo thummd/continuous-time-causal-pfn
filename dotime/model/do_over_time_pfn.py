@@ -39,6 +39,7 @@ class DoOverTimePFN(nn.Module):
         encoder_config: dict = None,
         head_type: str = "bar",
         tau_levels: Optional[List[float]] = None,
+        n_mixer_layers: int = 1,
     ):
         super().__init__()
         self.head_type = head_type
@@ -56,6 +57,7 @@ class DoOverTimePFN(nn.Module):
             n_max=n_max,
             embed_size=embed_size,
             n_heads=n_cross_attn_heads,
+            n_mixer_layers=n_mixer_layers,
         )
 
         if head_type == "quantile":

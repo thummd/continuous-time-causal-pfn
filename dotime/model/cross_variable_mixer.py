@@ -22,10 +22,12 @@ class CrossVariableMixer(nn.Module):
         n_max: int = 41,
         embed_size: int = 512,
         n_heads: int = 4,
+        n_mixer_layers: int = 1,
     ):
         super().__init__()
         self.n_max = n_max
         self.embed_size = embed_size
+        self.n_mixer_layers = n_mixer_layers
 
         # Intervention encoder: one-hot target (N_max) + type (3) + value (1) + t_start (1) + t_end (1)
         intervention_input_dim = n_max + 6
@@ -43,13 +45,16 @@ class CrossVariableMixer(nn.Module):
             nn.Linear(embed_size, embed_size),
         )
 
-        # Cross-attention: query (intervention+query) attends to variable representations
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=embed_size,
-            num_heads=n_heads,
-            batch_first=True,
-        )
-        self.attn_norm = nn.LayerNorm(embed_size)
+        # Cross-attention layers (stacked for iterative causal reasoning)
+        self.cross_attn_layers = nn.ModuleList([
+            nn.MultiheadAttention(
+                embed_dim=embed_size, num_heads=n_heads, batch_first=True,
+            )
+            for _ in range(n_mixer_layers)
+        ])
+        self.attn_norms = nn.ModuleList([
+            nn.LayerNorm(embed_size) for _ in range(n_mixer_layers)
+        ])
 
         # Output projection
         self.output_proj = nn.Sequential(
@@ -122,19 +127,19 @@ class CrossVariableMixer(nn.Module):
         # Combine intervention + query as attention query
         context = (h_int + h_query).unsqueeze(1)  # (B, 1, E)
 
-        # Cross-attention over variable representations
-        # key_padding_mask: True = ignore (padded), so invert variable_mask
+        # Cross-attention over variable representations (stacked layers)
         key_padding_mask = (variable_mask == 0)  # (B, N_max)
 
-        h_causal, _ = self.cross_attn(
-            query=context,
-            key=h_vars,
-            value=h_vars,
-            key_padding_mask=key_padding_mask,
-        )  # (B, 1, E)
+        for attn, norm in zip(self.cross_attn_layers, self.attn_norms):
+            h_out, _ = attn(
+                query=context,
+                key=h_vars,
+                value=h_vars,
+                key_padding_mask=key_padding_mask,
+            )  # (B, 1, E)
+            context = norm(h_out + context)  # residual + norm
 
-        h_causal = h_causal.squeeze(1)  # (B, E)
-        h_causal = self.attn_norm(h_causal + h_int + h_query)  # residual
+        h_causal = context.squeeze(1)  # (B, E)
         h_causal = self.output_proj(h_causal)  # (B, E)
 
         return h_causal
