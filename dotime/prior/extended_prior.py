@@ -12,7 +12,7 @@ import numpy as np
 from typing import Dict, Optional
 
 from causal_time_prior.prior import CausalTimePrior
-from causal_time_prior.interventions import InterventionType
+from causal_time_prior.interventions import InterventionType, InterventionSpec
 
 
 # Map intervention types to integers
@@ -138,13 +138,27 @@ class ExtendedCausalTimePrior:
         else:
             intervention_value = float(intervention.values)
 
-        # Override intervention value with observed-scale value if requested.
-        # The CTP simulation already used its own value for X_int generation;
-        # here we replace what the MODEL sees to ensure plausible magnitudes.
+        # Re-simulate with observed-scale intervention value if requested.
+        # Sample a value from X_obs, create a new InterventionSpec, and
+        # re-run the SCM to get a consistent (intervention_value, X_int) pair.
         if self.intervention_source == "observed":
             pre_int = X_obs[:int_onset, intervention_target]
             if pre_int.numel() > 0 and pre_int.std() > 1e-4:
-                intervention_value = float(pre_int[self.rng.randint(len(pre_int))].item())
+                obs_value = float(pre_int[self.rng.randint(len(pre_int))].item())
+                new_intervention = InterventionSpec(
+                    targets=intervention.targets,
+                    times=intervention.times,
+                    intervention_type=intervention.intervention_type,
+                    values=obs_value,
+                )
+                X_int_new = scm.sample_interventional(
+                    T=T, intervention=new_intervention, burn_in=self.prior.config.get('burn_in', 50),
+                )
+                if (not torch.isnan(X_int_new).any() and X_int_new.abs().max() < 500):
+                    X_int = X_int_new
+                    X_int_padded = pad_to_max_nodes(X_int, self.n_max)
+                    intervention = new_intervention
+                    intervention_value = obs_value
 
         intervention_type = INTERVENTION_TYPE_MAP[intervention.intervention_type]
 
