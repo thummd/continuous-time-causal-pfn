@@ -148,7 +148,7 @@ class ExtendedCausalTimePrior:
                 new_intervention = InterventionSpec(
                     targets=intervention.targets,
                     times=intervention.times,
-                    intervention_type=intervention.intervention_type,
+                    intervention_type=InterventionType.HARD,
                     values=obs_value,
                 )
                 X_int_new = scm.sample_interventional(
