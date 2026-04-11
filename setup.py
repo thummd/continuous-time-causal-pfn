@@ -14,4 +14,7 @@ setup(
         "causalchamber",
         "flash-linear-attention",
     ],
+    extras_require={
+        "analysis": ["statsmodels"],
+    },
 )

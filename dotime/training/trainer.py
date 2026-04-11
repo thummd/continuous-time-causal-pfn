@@ -102,6 +102,7 @@ def train(
     query_mode: str = "single",
     n_mixer_layers: int = 1,
     intervention_source: str = "prior",
+    eval_num_steps: int = 20,
 ):
     """Full training pipeline for Do-Over-Time-PFN."""
 
@@ -182,7 +183,7 @@ def train(
 
     # Eval loader (fixed seed for consistent evaluation)
     eval_loader = TemporalInterventionDataLoader(
-        num_steps=20, batch_size=batch_size,
+        num_steps=eval_num_steps, batch_size=batch_size,
         n_max=n_max, n_max_prior=n_max_prior,
         t_range=t_range, burn_in=burn_in,
         downstream_prob=downstream_prob, seed=seed + 2000,

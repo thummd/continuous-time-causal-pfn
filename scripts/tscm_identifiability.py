@@ -10,11 +10,61 @@ Modes:
 """
 
 import argparse
+import json
+import os
 import torch
 import numpy as np
 
 from dotime.prior.tscm_sampler import TSCMSampler, TSCMStructure
 from dotime.prior.extended_prior import pad_to_max_nodes
+
+
+# Near-zero targets are ambiguous for sign-based direction accuracy.
+# Targets with |t| < DIR_ACC_EPS are excluded from the metric and reported separately.
+DIR_ACC_EPS = 0.1
+
+
+def _direction_accuracy(preds: torch.Tensor, targets: torch.Tensor, eps: float = DIR_ACC_EPS):
+    """Sign-consistent direction accuracy, excluding near-zero targets.
+
+    Returns a dict with:
+        accuracy: fraction of non-excluded predictions with matching sign
+        n_valid:  number of samples used (|target| >= eps)
+        n_excluded: number of samples skipped (|target| < eps)
+    """
+    if preds.numel() == 0:
+        return {'accuracy': float('nan'), 'n_valid': 0, 'n_excluded': 0}
+    mask = targets.abs() >= eps
+    n_valid = int(mask.sum().item())
+    n_excluded = int(preds.numel() - n_valid)
+    if n_valid == 0:
+        return {'accuracy': float('nan'), 'n_valid': 0, 'n_excluded': n_excluded}
+    p = preds[mask]
+    t = targets[mask]
+    acc = ((p.sign() == t.sign()).float().mean().item())
+    return {'accuracy': acc, 'n_valid': n_valid, 'n_excluded': n_excluded}
+
+
+def _bootstrap_ci(values, n: int = 1000, alpha: float = 0.05, seed: int = 0):
+    """Bootstrap mean, std, and (1-alpha) CI from a list of per-sample values.
+
+    Returns (mean, std, ci_low, ci_high). Returns NaNs when values is empty.
+    """
+    arr = np.asarray([v for v in values if v is not None and not (isinstance(v, float) and np.isnan(v))],
+                     dtype=np.float64)
+    if arr.size == 0:
+        return float('nan'), float('nan'), float('nan'), float('nan')
+    if arr.size == 1:
+        v = float(arr[0])
+        return v, 0.0, v, v
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, arr.size, size=(n, arr.size))
+    boot_means = arr[idx].mean(axis=1)
+    mean = float(arr.mean())
+    std = float(arr.std(ddof=1))
+    lo = float(np.quantile(boot_means, alpha / 2))
+    hi = float(np.quantile(boot_means, 1 - alpha / 2))
+    return mean, std, lo, hi
 
 
 def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
@@ -205,13 +255,18 @@ def _aggregate_results(records, all_confounding):
     pred_effects = torch.tensor([r['pred_effect'] for r in records])
 
     valid_conf = [c for c in all_confounding if not np.isnan(c['mean_abs_corr'])]
-    mean_confounding = np.mean([c['mean_abs_corr'] for c in valid_conf]) if valid_conf else float('nan')
+    mean_confounding = (np.mean([c['mean_abs_corr'] for c in valid_conf])
+                        if valid_conf else float('nan'))
+
+    dir_acc = _direction_accuracy(preds, targets)
 
     return {
         'total': len(records),
         'rmse': torch.sqrt(torch.mean((preds - targets) ** 2)).item(),
         'mae': torch.mean(torch.abs(preds - targets)).item(),
-        'direction_accuracy': ((preds * targets) > 0).float().mean().item(),
+        'direction_accuracy': dir_acc['accuracy'],
+        'direction_n_valid': dir_acc['n_valid'],
+        'direction_n_excluded': dir_acc['n_excluded'],
         'effect_rmse': torch.sqrt(torch.mean((pred_effects - effects) ** 2)).item(),
         'effect_mae': torch.mean(torch.abs(pred_effects - effects)).item(),
         'mean_effect_magnitude': effects.abs().mean().item(),
@@ -335,6 +390,7 @@ def evaluate_structure(
             t = torch.tensor([r['target'] for r in tscm_records])
             e = torch.tensor([r['causal_effect'] for r in tscm_records])
             pe = torch.tensor([r['pred_effect'] for r in tscm_records])
+            tscm_dir = _direction_accuracy(p, t)
             per_tscm.append({
                 'sample_idx': sample_idx,
                 'n_queries': len(tscm_records),
@@ -343,7 +399,9 @@ def evaluate_structure(
                 'effect_rmse': torch.sqrt(torch.mean((pe - e) ** 2)).item(),
                 'effect_mae': torch.mean(torch.abs(pe - e)).item(),
                 'mean_causal_effect': e.mean().item(),
-                'direction_accuracy': ((p * t) > 0).float().mean().item(),
+                'direction_accuracy': tscm_dir['accuracy'],
+                'direction_n_valid': tscm_dir['n_valid'],
+                'direction_n_excluded': tscm_dir['n_excluded'],
                 'confounding': conf,
             })
 
@@ -392,6 +450,11 @@ def main():
                              "Use e.g. '1 2 3 5 10' to study effect decay.")
     parser.add_argument("--max-lag", type=int, default=1,
                         help="Max lag K for TSCM structures (1=Markov, 2-3 for higher-order)")
+    parser.add_argument("--json-out", type=str, default=None,
+                        help="If set, write full results dict to this JSON path. "
+                             "Default: results/<ckpt_parent>/tscm_eval.json when --checkpoint is given.")
+    parser.add_argument("--bootstrap-n", type=int, default=1000,
+                        help="Number of bootstrap resamples for CI estimation (default: 1000)")
     args = parser.parse_args()
 
     if args.verify_only:
@@ -438,17 +501,37 @@ def main():
             print("  No valid queries generated")
             continue
 
+        # Bootstrap CIs from per-TSCM values
+        per_tscm = results.get('per_tscm', [])
+        boot = {}
+        if per_tscm:
+            for key in ('rmse', 'mae', 'direction_accuracy', 'effect_rmse', 'effect_mae'):
+                vals = [t[key] for t in per_tscm if t.get(key) is not None]
+                mean, std, lo, hi = _bootstrap_ci(vals, n=args.bootstrap_n)
+                boot[key] = {'mean': mean, 'std': std, 'ci_low': lo, 'ci_high': hi}
+        results['bootstrap'] = boot
+
         print(f"  Queries: {results['total']} across {results['n_tscms']} TSCMs")
-        print(f"  RMSE: {results['rmse']:.4f} | MAE: {results['mae']:.4f}")
-        print(f"  Direction accuracy: {results['direction_accuracy']:.2%}")
-        print(f"  Causal effect RMSE: {results['effect_rmse']:.4f} | MAE: {results['effect_mae']:.4f}")
+        def _fmt(key, pct=False):
+            b = boot.get(key, {})
+            m = b.get('mean', float('nan'))
+            s = b.get('std', float('nan'))
+            if pct:
+                return f"{m:.2%} ± {s:.2%}"
+            return f"{m:.4f} ± {s:.4f}"
+        print(f"  RMSE: {_fmt('rmse')} | MAE: {_fmt('mae')}")
+        n_valid = results.get('direction_n_valid', 0)
+        n_excl = results.get('direction_n_excluded', 0)
+        print(f"  Direction accuracy: {_fmt('direction_accuracy', pct=True)} "
+              f"(n_valid={n_valid}, excluded={n_excl}, |t|<{DIR_ACC_EPS})")
+        print(f"  Causal effect RMSE: {_fmt('effect_rmse')} | MAE: {_fmt('effect_mae')}")
         print(f"  Mean |causal effect|: {results['mean_effect_magnitude']:.4f}")
         print(f"  Mean confounding (corr): {results['mean_confounding']:.4f}")
 
         # Per-TSCM summary
-        if results['per_tscm']:
-            per_rmse = [t['rmse'] for t in results['per_tscm']]
-            per_effect = [t['mean_causal_effect'] for t in results['per_tscm']]
+        if per_tscm:
+            per_rmse = [t['rmse'] for t in per_tscm]
+            per_effect = [t['mean_causal_effect'] for t in per_tscm]
             print(f"  Per-TSCM RMSE: min={min(per_rmse):.4f} median={np.median(per_rmse):.4f} max={max(per_rmse):.4f}")
             print(f"  Per-TSCM effect: min={min(per_effect):.4f} median={np.median(per_effect):.4f} max={max(per_effect):.4f}")
 
@@ -468,19 +551,34 @@ def main():
                       f"Dir={r_off['direction_accuracy']:.1%}")
 
     # Summary table
-    print("\n" + "=" * 105)
-    print(f"{'Structure':<25} {'N':>5} {'RMSE':>7} {'MAE':>7} {'Dir':>6} "
-          f"{'Eff.RMSE':>8} {'|Effect|':>8} {'Confound':>8}")
-    print("-" * 105)
+    header_w = 128
+    print("\n" + "=" * header_w)
+    print(f"{'Structure':<25} {'N':>4} {'Nt':>4} "
+          f"{'RMSE':>8} {'±std':>7} "
+          f"{'Dir':>7} {'±std':>7} "
+          f"{'Nv':>4} {'Nx':>4} "
+          f"{'Eff.RMSE':>9} {'|Effect|':>9} {'Confound':>8}")
+    print("-" * header_w)
     for name, r in all_results.items():
         if r['total'] == 0:
-            print(f"{name:<25} {'--':>5}")
+            print(f"{name:<25} {'--':>4}")
             continue
-        print(f"{name:<25} {r['total']:>5} {r['rmse']:>7.4f} {r['mae']:>7.4f} "
-              f"{r['direction_accuracy']:>5.1%} "
-              f"{r['effect_rmse']:>8.4f} {r['mean_effect_magnitude']:>8.4f} "
+        b = r.get('bootstrap', {})
+        rmse_m = b.get('rmse', {}).get('mean', r['rmse'])
+        rmse_s = b.get('rmse', {}).get('std', 0.0)
+        dir_m = b.get('direction_accuracy', {}).get('mean', r['direction_accuracy'])
+        dir_s = b.get('direction_accuracy', {}).get('std', 0.0)
+        eff_m = b.get('effect_rmse', {}).get('mean', r['effect_rmse'])
+        n_valid = r.get('direction_n_valid', 0)
+        n_excl = r.get('direction_n_excluded', 0)
+        print(f"{name:<25} {r['total']:>4} {r.get('n_tscms', 0):>4} "
+              f"{rmse_m:>8.4f} {rmse_s:>7.4f} "
+              f"{dir_m:>6.1%} {dir_s:>6.1%} "
+              f"{n_valid:>4} {n_excl:>4} "
+              f"{eff_m:>9.4f} {r['mean_effect_magnitude']:>9.4f} "
               f"{r['mean_confounding']:>8.4f}")
-    print("=" * 105)
+    print("=" * header_w)
+    print(f"(N=total queries, Nt=TSCMs, Nv=direction-valid, Nx=excluded where |target|<{DIR_ACC_EPS})")
 
     # Per-offset summary table (if multiple offsets)
     if len(args.query_offsets) > 1:
@@ -504,6 +602,47 @@ def main():
                 print(f"  t+{offset:<5} {n:>6} {avg_rmse:>8.4f} {avg_eff:>9.4f} "
                       f"{avg_mag:>9.4f} {avg_dir:>7.1%}")
         print("=" * 90)
+
+    # JSON export
+    json_path = args.json_out
+    if json_path is None:
+        ckpt_dir = os.path.basename(os.path.dirname(os.path.abspath(args.checkpoint)))
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        json_path = os.path.join(repo_root, 'results', ckpt_dir, 'tscm_eval.json')
+
+    def _json_clean(obj):
+        """Recursively convert non-JSON-serializable values to primitives."""
+        if isinstance(obj, dict):
+            return {str(k): _json_clean(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_json_clean(v) for v in obj]
+        if isinstance(obj, (np.floating, np.integer)):
+            return obj.item()
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().cpu().tolist()
+        if isinstance(obj, float) and np.isnan(obj):
+            return None
+        return obj
+
+    export = {
+        'checkpoint': args.checkpoint,
+        'n_samples': args.n_samples,
+        'max_lag': args.max_lag,
+        'multi_step': args.multi_step,
+        'query_offsets': args.query_offsets,
+        'dir_acc_eps': DIR_ACC_EPS,
+        'bootstrap_n': args.bootstrap_n,
+        'results': _json_clean(all_results),
+    }
+    # Strip the heavy 'output' (model logits) from per_tscm records if present.
+    for structure_name, r in export['results'].items():
+        if isinstance(r, dict):
+            r.pop('coverage', None)
+
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+    with open(json_path, 'w') as f:
+        json.dump(export, f, indent=2)
+    print(f"\nResults written to {json_path}")
 
 
 if __name__ == "__main__":

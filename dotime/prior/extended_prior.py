@@ -138,13 +138,41 @@ class ExtendedCausalTimePrior:
         else:
             intervention_value = float(intervention.values)
 
-        # Re-simulate with observed-scale intervention value if requested.
-        # Sample a value from X_obs, create a new InterventionSpec, and
-        # re-run the SCM to get a consistent (intervention_value, X_int) pair.
-        if self.intervention_source == "observed":
+        # Re-simulate with an observed-scale intervention value if requested.
+        # Sample a value from the pre-intervention history of the intervention
+        # target, create a new InterventionSpec, and re-run the SCM so that
+        # (intervention_value, X_int) stays consistent.
+        #
+        # Modes:
+        #   "prior"             — keep the CTP-sampled value (no re-simulation).
+        #   "observed_discrete" — pick a random past value (measure-zero for
+        #                         continuous variables, kept for backward compat).
+        #   "observed_normal"   — sample from N(mean(pre_int), std(pre_int)).
+        #   "observed_uniform"  — sample from U[min(pre_int), max(pre_int)].
+        #
+        # "observed" is accepted as a legacy alias for "observed_discrete".
+        mode = self.intervention_source
+        if mode == "observed":
+            mode = "observed_discrete"
+
+        if mode in ("observed_discrete", "observed_normal", "observed_uniform"):
             pre_int = X_obs[:int_onset, intervention_target]
-            if pre_int.numel() > 0 and pre_int.std() > 1e-4:
-                obs_value = float(pre_int[self.rng.randint(len(pre_int))].item())
+            if pre_int.numel() > 0 and float(pre_int.std().item()) > 1e-4:
+                pre_np = pre_int.detach().cpu().numpy()
+                if mode == "observed_discrete":
+                    obs_value = float(pre_np[self.rng.randint(len(pre_np))])
+                elif mode == "observed_normal":
+                    mu = float(pre_np.mean())
+                    sigma = float(pre_np.std(ddof=1)) if len(pre_np) > 1 else 0.0
+                    obs_value = float(self.rng.randn() * max(sigma, 1e-4) + mu)
+                else:  # observed_uniform
+                    lo = float(pre_np.min())
+                    hi = float(pre_np.max())
+                    if hi > lo:
+                        obs_value = float(self.rng.uniform(lo, hi))
+                    else:
+                        obs_value = lo
+
                 new_intervention = InterventionSpec(
                     targets=intervention.targets,
                     times=intervention.times,
@@ -152,7 +180,8 @@ class ExtendedCausalTimePrior:
                     values=obs_value,
                 )
                 X_int_new = scm.sample_interventional(
-                    T=T, intervention=new_intervention, burn_in=self.prior.config.get('burn_in', 50),
+                    T=T, intervention=new_intervention,
+                    burn_in=self.prior.config.get('burn_in', 50),
                 )
                 if (not torch.isnan(X_int_new).any() and X_int_new.abs().max() < 500):
                     X_int = X_int_new

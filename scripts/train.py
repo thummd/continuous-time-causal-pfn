@@ -43,9 +43,19 @@ def main():
                         help="Query mode: 'single' (random) or 'all_pairs' (all outcome vars)")
     parser.add_argument("--n-mixer-layers", type=int, default=1,
                         help="Number of stacked cross-attention layers in mixer (1=default, 3=deep)")
-    parser.add_argument("--intervention-source", type=str, default="prior",
-                        choices=["prior", "observed"],
-                        help="Intervention value source: 'prior' (N(0,2)) or 'observed' (from X_obs)")
+    parser.add_argument(
+        "--intervention-source", type=str, default="prior",
+        choices=["prior", "observed_discrete", "observed_normal", "observed_uniform", "observed"],
+        help=(
+            "Intervention value source for re-simulation. "
+            "'prior': keep N(0,2) from CTP (no re-simulation). "
+            "'observed_discrete': sample a random past value (legacy 'observed'). "
+            "'observed_normal': sample N(mean(pre_int), std(pre_int)). "
+            "'observed_uniform': sample U[min(pre_int), max(pre_int)]."
+        ),
+    )
+    parser.add_argument("--eval-num-steps", type=int, default=20,
+                        help="Number of eval batches per validation pass (default 20).")
     args = parser.parse_args()
 
     # Load config
@@ -96,6 +106,7 @@ def main():
         query_mode=args.query_mode,
         n_mixer_layers=args.n_mixer_layers,
         intervention_source=args.intervention_source,
+        eval_num_steps=args.eval_num_steps,
     )
 
 
