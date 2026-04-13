@@ -36,6 +36,7 @@ class TemporalInterventionDataLoader:
         n_queries: int = 1,
         query_mode: str = "single",
         intervention_source: str = "prior",
+        tscm_structure: str = None,
     ):
         self.num_steps = num_steps
         self.batch_size = batch_size
@@ -55,6 +56,7 @@ class TemporalInterventionDataLoader:
             downstream_prob=downstream_prob,
             seed=seed,
             intervention_source=intervention_source,
+            tscm_structure=tscm_structure,
         )
 
     def __len__(self) -> int:

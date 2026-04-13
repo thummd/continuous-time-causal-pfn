@@ -56,6 +56,9 @@ def main():
     )
     parser.add_argument("--eval-num-steps", type=int, default=20,
                         help="Number of eval batches per validation pass (default 20).")
+    parser.add_argument("--tscm-structure", type=str, default=None,
+                        help="Train on a single TSCM structure instead of full CTP prior. "
+                             "Values: back_door, front_door, observed_confounder, mediator, etc.")
     args = parser.parse_args()
 
     # Load config
@@ -107,6 +110,7 @@ def main():
         n_mixer_layers=args.n_mixer_layers,
         intervention_source=args.intervention_source,
         eval_num_steps=args.eval_num_steps,
+        tscm_structure=args.tscm_structure,
     )
 
 

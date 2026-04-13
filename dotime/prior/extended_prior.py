@@ -13,6 +13,7 @@ from typing import Dict, Optional
 
 from causal_time_prior.prior import CausalTimePrior
 from causal_time_prior.interventions import InterventionType, InterventionSpec
+from dotime.prior.tscm_sampler import TSCMSampler, TSCMStructure
 
 
 # Map intervention types to integers
@@ -32,6 +33,50 @@ def pad_to_max_nodes(X: torch.Tensor, max_nodes: int) -> torch.Tensor:
     return X[:, :max_nodes]
 
 
+class TSCMPrior:
+    """Drop-in replacement for CausalTimePrior that generates from a single TSCM structure.
+
+    Has the same ``generate_pair(T)`` interface so ``ExtendedCausalTimePrior``
+    can swap it in transparently.
+    """
+
+    def __init__(self, structure: TSCMStructure, burn_in: int = 50, seed: int = 42):
+        self.sampler = TSCMSampler(structure, max_lag=1)
+        self.hidden_vars = self.sampler.get_hidden_vars()
+        self.burn_in = burn_in
+        self.gen = torch.Generator().manual_seed(seed)
+        self.config = {'burn_in': burn_in}
+
+    def generate_pair(self, T: int):
+        """Return (X_obs, X_int, intervention, scm) like CausalTimePrior."""
+        scm = self.sampler.sample(generator=self.gen)
+        N = len(scm._topo)
+
+        X_obs = scm.sample_observational(T=T, burn_in=self.burn_in, generator=self.gen)
+
+        # Pick intervention target: first non-hidden variable
+        valid = [i for i in range(N) if i not in self.hidden_vars]
+        int_target = valid[0] if valid else 0
+
+        # Intervention at a random time in [10, T-10], matching CTP's range
+        t_lo = min(10, T - 1)
+        t_hi = max(t_lo + 1, T - 10)
+        int_time = int(torch.randint(t_lo, t_hi, (1,), generator=self.gen).item())
+        int_value = float(torch.randn(1, generator=self.gen).item() * 2.0)
+
+        intervention = InterventionSpec(
+            targets=[int_target],
+            times=[int_time],
+            intervention_type=InterventionType.HARD,
+            values=int_value,
+        )
+
+        X_int = scm.sample_interventional(
+            T=T, intervention=intervention, burn_in=self.burn_in, generator=self.gen,
+        )
+        return X_obs, X_int, intervention, scm
+
+
 class ExtendedCausalTimePrior:
     """CTP wrapper that produces model-ready dicts for Do-Over-Time-PFN."""
 
@@ -47,22 +92,28 @@ class ExtendedCausalTimePrior:
         chain_prob: float = 0.15,
         regime_switching_prob: float = 0.15,
         intervention_source: str = "prior",
+        tscm_structure: Optional[str] = None,
     ):
         self.n_max = n_max
         self.t_range = t_range
         self.downstream_prob = downstream_prob
         self.intervention_source = intervention_source
 
-        config = {
-            'N_max': n_max_prior,
-            'burn_in': burn_in,
-        }
-        self.prior = CausalTimePrior(
-            config=config,
-            seed=seed,
-            chain_prob=chain_prob,
-            regime_switching_prob=regime_switching_prob,
-        )
+        if tscm_structure is not None:
+            # Train on a single TSCM structure instead of the full CTP prior
+            structure_enum = TSCMStructure(tscm_structure)
+            self.prior = TSCMPrior(structure_enum, burn_in=burn_in, seed=seed)
+        else:
+            config = {
+                'N_max': n_max_prior,
+                'burn_in': burn_in,
+            }
+            self.prior = CausalTimePrior(
+                config=config,
+                seed=seed,
+                chain_prob=chain_prob,
+                regime_switching_prob=regime_switching_prob,
+            )
         self.rng = np.random.RandomState(seed)
 
     def sample_T(self) -> int:

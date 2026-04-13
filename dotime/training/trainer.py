@@ -103,6 +103,7 @@ def train(
     n_mixer_layers: int = 1,
     intervention_source: str = "prior",
     eval_num_steps: int = 20,
+    tscm_structure: str = None,
 ):
     """Full training pipeline for Do-Over-Time-PFN."""
 
@@ -111,6 +112,8 @@ def train(
     print("=" * 70)
     print(f"   Head type: {head_type}")
     print(f"   Target: {target_key}")
+    if tscm_structure:
+        print(f"   TSCM structure: {tscm_structure} (single-structure training)")
     if n_queries > 1:
         print(f"   Dense supervision: {n_queries} queries per trajectory")
     if observational_only:
@@ -179,6 +182,7 @@ def train(
         n_queries=n_queries,
         query_mode=query_mode,
         intervention_source=intervention_source,
+        tscm_structure=tscm_structure,
     )
 
     # Eval loader (fixed seed for consistent evaluation)
