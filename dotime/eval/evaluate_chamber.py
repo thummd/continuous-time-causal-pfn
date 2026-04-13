@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 from dotime.data.causal_chamber import CausalChamberLoader, LT_SENSORS
 from dotime.eval.metrics import (
-    compute_rmse, compute_mae,
+    compute_rmse, compute_mae, compute_nmse,
     compute_quantile_calibration, compute_pinball_metric,
 )
 
@@ -180,6 +180,7 @@ def _compute_confounding_aware_metrics(
             (suggests it's confounded by pre-intervention trends)
     """
     rmse = compute_rmse(preds, targets)
+    nmse = compute_nmse(preds, targets)
     mae = compute_mae(preds, targets)
     naive_rmse = compute_rmse(last_obs, targets)
 
@@ -200,6 +201,7 @@ def _compute_confounding_aware_metrics(
 
     return {
         "rmse": rmse,
+        "nmse": nmse,
         "mae": mae,
         "naive_rmse": naive_rmse,
         "lift_over_naive": lift,

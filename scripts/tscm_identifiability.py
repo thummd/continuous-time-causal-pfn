@@ -260,9 +260,15 @@ def _aggregate_results(records, all_confounding):
 
     dir_acc = _direction_accuracy(preds, targets)
 
+    # nMSE: MSE / Var(targets). 1.0 = predict-the-mean baseline.
+    mse = torch.mean((preds - targets) ** 2)
+    target_var = torch.var(targets)
+    nmse = (mse / target_var).item() if target_var > 1e-12 else float('nan')
+
     return {
         'total': len(records),
-        'rmse': torch.sqrt(torch.mean((preds - targets) ** 2)).item(),
+        'rmse': torch.sqrt(mse).item(),
+        'nmse': nmse,
         'mae': torch.mean(torch.abs(preds - targets)).item(),
         'direction_accuracy': dir_acc['accuracy'],
         'direction_n_valid': dir_acc['n_valid'],
@@ -391,10 +397,14 @@ def evaluate_structure(
             e = torch.tensor([r['causal_effect'] for r in tscm_records])
             pe = torch.tensor([r['pred_effect'] for r in tscm_records])
             tscm_dir = _direction_accuracy(p, t)
+            tscm_mse = torch.mean((p - t) ** 2)
+            tscm_var = torch.var(t)
+            tscm_nmse = (tscm_mse / tscm_var).item() if tscm_var > 1e-12 else float('nan')
             per_tscm.append({
                 'sample_idx': sample_idx,
                 'n_queries': len(tscm_records),
-                'rmse': torch.sqrt(torch.mean((p - t) ** 2)).item(),
+                'rmse': torch.sqrt(tscm_mse).item(),
+                'nmse': tscm_nmse,
                 'mae': torch.mean(torch.abs(p - t)).item(),
                 'effect_rmse': torch.sqrt(torch.mean((pe - e) ** 2)).item(),
                 'effect_mae': torch.mean(torch.abs(pe - e)).item(),
@@ -505,7 +515,7 @@ def main():
         per_tscm = results.get('per_tscm', [])
         boot = {}
         if per_tscm:
-            for key in ('rmse', 'mae', 'direction_accuracy', 'effect_rmse', 'effect_mae'):
+            for key in ('rmse', 'nmse', 'mae', 'direction_accuracy', 'effect_rmse', 'effect_mae'):
                 vals = [t[key] for t in per_tscm if t.get(key) is not None]
                 mean, std, lo, hi = _bootstrap_ci(vals, n=args.bootstrap_n)
                 boot[key] = {'mean': mean, 'std': std, 'ci_low': lo, 'ci_high': hi}
@@ -551,10 +561,10 @@ def main():
                       f"Dir={r_off['direction_accuracy']:.1%}")
 
     # Summary table
-    header_w = 128
+    header_w = 140
     print("\n" + "=" * header_w)
     print(f"{'Structure':<25} {'N':>4} {'Nt':>4} "
-          f"{'RMSE':>8} {'±std':>7} "
+          f"{'RMSE':>8} {'±std':>7} {'nMSE':>6} "
           f"{'Dir':>7} {'±std':>7} "
           f"{'Nv':>4} {'Nx':>4} "
           f"{'Eff.RMSE':>9} {'|Effect|':>9} {'Confound':>8}")
@@ -566,13 +576,14 @@ def main():
         b = r.get('bootstrap', {})
         rmse_m = b.get('rmse', {}).get('mean', r['rmse'])
         rmse_s = b.get('rmse', {}).get('std', 0.0)
+        nmse = r.get('nmse', float('nan'))
         dir_m = b.get('direction_accuracy', {}).get('mean', r['direction_accuracy'])
         dir_s = b.get('direction_accuracy', {}).get('std', 0.0)
         eff_m = b.get('effect_rmse', {}).get('mean', r['effect_rmse'])
         n_valid = r.get('direction_n_valid', 0)
         n_excl = r.get('direction_n_excluded', 0)
         print(f"{name:<25} {r['total']:>4} {r.get('n_tscms', 0):>4} "
-              f"{rmse_m:>8.4f} {rmse_s:>7.4f} "
+              f"{rmse_m:>8.4f} {rmse_s:>7.4f} {nmse:>6.3f} "
               f"{dir_m:>6.1%} {dir_s:>6.1%} "
               f"{n_valid:>4} {n_excl:>4} "
               f"{eff_m:>9.4f} {r['mean_effect_magnitude']:>9.4f} "

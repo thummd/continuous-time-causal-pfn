@@ -14,6 +14,20 @@ def compute_mae(predictions: torch.Tensor, targets: torch.Tensor) -> float:
     return torch.mean(torch.abs(predictions - targets)).item()
 
 
+def compute_nmse(predictions: torch.Tensor, targets: torch.Tensor) -> float:
+    """Normalized mean squared error: MSE / Var(targets).
+
+    Returns 1.0 when the model predicts the target mean (trivial baseline),
+    <1.0 when the model is better, and >1.0 when worse. Returns NaN when
+    target variance is zero.
+    """
+    mse = torch.mean((predictions - targets) ** 2)
+    var = torch.var(targets)
+    if var < 1e-12:
+        return float('nan')
+    return (mse / var).item()
+
+
 @torch.no_grad()
 def compute_quantile_calibration(
     all_logits: torch.Tensor,
