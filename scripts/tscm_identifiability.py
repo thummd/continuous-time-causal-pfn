@@ -17,6 +17,7 @@ import numpy as np
 
 from dotime.prior.tscm_sampler import TSCMSampler, TSCMStructure
 from dotime.prior.extended_prior import pad_to_max_nodes
+from dotime.eval.metrics import compute_rmse, compute_mae, compute_r2, compute_nmse
 
 
 # Near-zero targets are ambiguous for sign-based direction accuracy.
@@ -262,8 +263,10 @@ def _aggregate_results(records, all_confounding):
 
     return {
         'total': len(records),
-        'rmse': torch.sqrt(torch.mean((preds - targets) ** 2)).item(),
-        'mae': torch.mean(torch.abs(preds - targets)).item(),
+        'rmse': compute_rmse(preds, targets),
+        'mae': compute_mae(preds, targets),
+        'nmse': compute_nmse(preds, targets),
+        'r2': compute_r2(preds, targets),
         'direction_accuracy': dir_acc['accuracy'],
         'direction_n_valid': dir_acc['n_valid'],
         'direction_n_excluded': dir_acc['n_excluded'],
@@ -272,7 +275,6 @@ def _aggregate_results(records, all_confounding):
         'mean_effect_magnitude': effects.abs().mean().item(),
         'mean_confounding': mean_confounding,
     }
-
 
 def evaluate_structure(
     model,
@@ -394,8 +396,10 @@ def evaluate_structure(
             per_tscm.append({
                 'sample_idx': sample_idx,
                 'n_queries': len(tscm_records),
-                'rmse': torch.sqrt(torch.mean((p - t) ** 2)).item(),
-                'mae': torch.mean(torch.abs(p - t)).item(),
+                'rmse': compute_rmse(p, t),
+                'mae': compute_mae(p, t),
+                'nmse': compute_nmse(p, t),
+                'r2': compute_r2(p, t),
                 'effect_rmse': torch.sqrt(torch.mean((pe - e) ** 2)).item(),
                 'effect_mae': torch.mean(torch.abs(pe - e)).item(),
                 'mean_causal_effect': e.mean().item(),
@@ -505,7 +509,7 @@ def main():
         per_tscm = results.get('per_tscm', [])
         boot = {}
         if per_tscm:
-            for key in ('rmse', 'mae', 'direction_accuracy', 'effect_rmse', 'effect_mae'):
+            for key in ('rmse', 'mae', 'direction_accuracy', 'effect_rmse', 'effect_mae', 'nmse', 'r2'):
                 vals = [t[key] for t in per_tscm if t.get(key) is not None]
                 mean, std, lo, hi = _bootstrap_ci(vals, n=args.bootstrap_n)
                 boot[key] = {'mean': mean, 'std': std, 'ci_low': lo, 'ci_high': hi}
@@ -516,10 +520,12 @@ def main():
             b = boot.get(key, {})
             m = b.get('mean', float('nan'))
             s = b.get('std', float('nan'))
+            l = b.get('ci_low', float('nan'))
+            h = b.get('ci_high', float('nan'))
             if pct:
-                return f"{m:.2%} ± {s:.2%}"
-            return f"{m:.4f} ± {s:.4f}"
-        print(f"  RMSE: {_fmt('rmse')} | MAE: {_fmt('mae')}")
+                return f"{m:.2} ± {s:.2} ({l:.2}, {h:.2})"
+            return f"{m:.4} ± {s:.4} ({l:.4}, {h:.4})"
+        print(f"  RMSE: {_fmt('rmse')} | MAE: {_fmt('mae')} | NMSE: {_fmt('nmse')} | R2 {_fmt('r2')}" )
         n_valid = results.get('direction_n_valid', 0)
         n_excl = results.get('direction_n_excluded', 0)
         print(f"  Direction accuracy: {_fmt('direction_accuracy', pct=True)} "

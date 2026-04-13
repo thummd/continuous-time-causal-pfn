@@ -2,11 +2,28 @@
 
 import torch
 from typing import Dict, List, Optional, Union
+from sklearn.metrics import r2_score
 
 
 def compute_rmse(predictions: torch.Tensor, targets: torch.Tensor) -> float:
     """Root mean squared error."""
     return torch.sqrt(torch.mean((predictions - targets) ** 2)).item()
+
+def compute_nmse(predictions: torch.Tensor, targets: torch.Tensor) -> float:
+    """Normalized mean squared error."""
+
+    mse = torch.mean((predictions - targets) ** 2)
+    target_range = torch.max(targets) - torch.min(targets)
+    if target_range == 0:
+        return mse.item()
+    nmse = mse / (target_range ** 2)
+    
+    return nmse.item()
+
+
+def compute_r2(predictions: torch.Tensor, targets: torch.Tensor) -> float:
+    """R² score."""
+    return r2_score(targets.cpu().numpy(), predictions.cpu().numpy())
 
 
 def compute_mae(predictions: torch.Tensor, targets: torch.Tensor) -> float:
@@ -165,6 +182,8 @@ def evaluate_model(model, dataloader, device="cpu", tau_levels=None) -> Dict[str
         'loss': total_loss / max(n_batches, 1),
         'rmse': compute_rmse(all_preds, all_targets),
         'mae': compute_mae(all_preds, all_targets),
+        'nmse': compute_nmse(all_preds, all_targets),
+        'r2': compute_r2(all_preds, all_targets),
     }
 
     if tau_levels is not None and all_logits:
