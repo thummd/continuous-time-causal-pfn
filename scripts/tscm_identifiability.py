@@ -261,11 +261,6 @@ def _aggregate_results(records, all_confounding):
 
     dir_acc = _direction_accuracy(preds, targets)
 
-    # nMSE: MSE / Var(targets). 1.0 = predict-the-mean baseline.
-    mse = torch.mean((preds - targets) ** 2)
-    target_var = torch.var(targets)
-    nmse = (mse / target_var).item() if target_var > 1e-12 else float('nan')
-
     return {
         'total': len(records),
         'rmse': compute_rmse(preds, targets),
@@ -398,9 +393,6 @@ def evaluate_structure(
             e = torch.tensor([r['causal_effect'] for r in tscm_records])
             pe = torch.tensor([r['pred_effect'] for r in tscm_records])
             tscm_dir = _direction_accuracy(p, t)
-            tscm_mse = torch.mean((p - t) ** 2)
-            tscm_var = torch.var(t)
-            tscm_nmse = (tscm_mse / tscm_var).item() if tscm_var > 1e-12 else float('nan')
             per_tscm.append({
                 'sample_idx': sample_idx,
                 'n_queries': len(tscm_records),

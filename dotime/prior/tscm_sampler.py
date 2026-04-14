@@ -193,43 +193,57 @@ class TSCMSampler:
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_back_door(self) -> TemporalDAG:
-        """Z -> X, Z -> Y, X -> Y. Z blocks the back-door path."""
+        """Z -> X (inst.), X -> Y (inst.), Z(t-1) -> Y(t) (lagged).
+
+        Z is a confounder: it causes both X and Y. The backdoor adjustment
+        requires conditioning on Z. The lagged Z(t-1)->Y(t) edge makes the
+        confounding observable from the history, so the model can learn to
+        adjust for it using intervention context (knowing do(X=v) breaks
+        the Z->X path).
+        """
         G_0 = nx.DiGraph()
         nodes = ["Z", "X", "Y"]
         G_0.add_nodes_from(nodes)
-        G_0.add_edge("Z", "X")  # instantaneous
-        G_0.add_edge("Z", "Y")  # instantaneous
-        G_0.add_edge("X", "Y")  # instantaneous
+        G_0.add_edge("Z", "X")  # instantaneous: Z causes X
+        G_0.add_edge("X", "Y")  # instantaneous: X causes Y
 
         N = len(nodes)
         G_lags = []
         for k in range(self.max_lag):
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
+                G_k[0, 2] = 1.0  # Z(t-1) -> Y(t): lagged confounding path
                 for i in range(N):
-                    G_k[i, i] = 1.0
+                    G_k[i, i] = 1.0  # autoregressive self-loops
             G_lags.append(G_k)
 
         topo = list(nx.topological_sort(G_0))
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_front_door(self) -> TemporalDAG:
-        """X -> M -> Y, U -> X, U -> Y. U is hidden. M satisfies front-door."""
+        """U -> X, U -> Y (inst.), X -> M (inst.), M(t-1) -> Y(t) (lagged).
+
+        U is a hidden confounder. M is a mediator satisfying the front-door
+        criterion: all directed paths from X to Y go through M, and M is
+        unconfounded given X. The lagged M(t-1)->Y(t) edge makes the
+        mediation observable from history.
+        """
         G_0 = nx.DiGraph()
         nodes = ["U", "X", "M", "Y"]
         G_0.add_nodes_from(nodes)
-        G_0.add_edge("U", "X")  # instantaneous
-        G_0.add_edge("U", "Y")  # instantaneous
-        G_0.add_edge("X", "M")  # instantaneous
-        G_0.add_edge("M", "Y")  # instantaneous
+        G_0.add_edge("U", "X")  # instantaneous: hidden confounder -> treatment
+        G_0.add_edge("U", "Y")  # instantaneous: hidden confounder -> outcome
+        G_0.add_edge("X", "M")  # instantaneous: treatment -> mediator
 
         N = len(nodes)
         G_lags = []
         for k in range(self.max_lag):
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
+                # Topo order is [U, X, Y, M] so M=3, Y=2
+                G_k[3, 2] = 1.0  # M(t-1) -> Y(t): lagged mediation path
                 for i in range(N):
-                    G_k[i, i] = 1.0
+                    G_k[i, i] = 1.0  # autoregressive self-loops
             G_lags.append(G_k)
 
         topo = list(nx.topological_sort(G_0))

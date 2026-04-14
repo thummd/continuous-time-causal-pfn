@@ -26,7 +26,7 @@ training:
   lr: 0.0002           # match TempoPFN
   warmup_steps: 1000
   total_steps: 100000
-  grad_clip: 100.0     # match TempoPFN
+  grad_clip: 1.0       # tighter clipping to prevent spike-induced parameter jumps
   weight_decay: 0.01
   bucket_calibration_samples: 10000
   eval_every: 500

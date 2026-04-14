@@ -10,15 +10,16 @@ def compute_rmse(predictions: torch.Tensor, targets: torch.Tensor) -> float:
     return torch.sqrt(torch.mean((predictions - targets) ** 2)).item()
 
 def compute_nmse(predictions: torch.Tensor, targets: torch.Tensor) -> float:
-    """Normalized mean squared error."""
+    """Normalized mean squared error: MSE / Var(targets).
 
+    Returns 1.0 when predictions equal the target mean (trivial baseline),
+    <1.0 when the model is better, >1.0 when worse. NaN when Var ≈ 0.
+    """
     mse = torch.mean((predictions - targets) ** 2)
-    target_range = torch.max(targets) - torch.min(targets)
-    if target_range == 0:
-        return mse.item()
-    nmse = mse / (target_range ** 2)
-    
-    return nmse.item()
+    var = torch.var(targets)
+    if var < 1e-8:
+        return float('nan')
+    return (mse / var).item()
 
 def compute_r2(predictions: torch.Tensor, targets: torch.Tensor) -> float:
     """R² score."""
