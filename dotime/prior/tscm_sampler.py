@@ -67,6 +67,7 @@ class TSCMSampler:
         activations: Optional[List[nn.Module]] = None,
         sigma_w: float = 1.0,
         sigma_b: float = 0.5,
+        use_lagged_edges: bool = True,
         noise_std: float = 0.3,
         device: str = "cpu",
     ):
@@ -77,6 +78,7 @@ class TSCMSampler:
         self.sigma_b = sigma_b
         self.noise_std = noise_std
         self.device = torch.device(device)
+        self.use_lagged_edges = use_lagged_edges
 
     def sample(self, generator: Optional[torch.Generator] = None) -> TemporalSCM:
         """Sample a temporal SCM with the specified structure.
@@ -193,26 +195,26 @@ class TSCMSampler:
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_back_door(self) -> TemporalDAG:
-        """Z -> X (inst.), X -> Y (inst.), Z(t-1) -> Y(t) (lagged).
+        """X -> A (inst.), A -> Y (inst.), X(t-1) -> Y(t) (lagged if enabled).
 
-        Z is a confounder: it causes both X and Y. The backdoor adjustment
-        requires conditioning on Z. The lagged Z(t-1)->Y(t) edge makes the
-        confounding observable from the history, so the model can learn to
-        adjust for it using intervention context (knowing do(X=v) breaks
-        the Z->X path).
+        X = confounder, A = treatment, Y = outcome.
+        X causes both A and Y. Backdoor adjustment requires conditioning on X.
+        The lagged X(t-1)->Y(t) edge (when use_lagged_edges=True) makes the
+        confounding observable from history.
         """
         G_0 = nx.DiGraph()
-        nodes = ["Z", "X", "Y"]
+        nodes = ["X", "A", "Y"]
         G_0.add_nodes_from(nodes)
-        G_0.add_edge("Z", "X")  # instantaneous: Z causes X
-        G_0.add_edge("X", "Y")  # instantaneous: X causes Y
+        G_0.add_edge("X", "A")  # confounder -> treatment
+        G_0.add_edge("A", "Y")  # treatment -> outcome
 
         N = len(nodes)
         G_lags = []
         for k in range(self.max_lag):
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
-                G_k[0, 2] = 1.0  # Z(t-1) -> Y(t): lagged confounding path
+                if self.use_lagged_edges:
+                    G_k[0, 2] = 1.0  # X(t-1) -> Y(t): lagged confounding
                 for i in range(N):
                     G_k[i, i] = 1.0  # autoregressive self-loops
             G_lags.append(G_k)
@@ -221,27 +223,27 @@ class TSCMSampler:
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_front_door(self) -> TemporalDAG:
-        """U -> X, U -> Y (inst.), X -> M (inst.), M(t-1) -> Y(t) (lagged).
+        """U -> X, U -> Y (inst.), X -> M (inst.), M(t-1) -> Y(t) (lagged if enabled).
 
-        U is a hidden confounder. M is a mediator satisfying the front-door
-        criterion: all directed paths from X to Y go through M, and M is
-        unconfounded given X. The lagged M(t-1)->Y(t) edge makes the
-        mediation observable from history.
+        U = hidden confounder, X = treatment, M = mediator, Y = outcome.
+        M satisfies the front-door criterion. The lagged M(t-1)->Y(t) edge
+        (when use_lagged_edges=True) makes the mediation observable from history.
         """
         G_0 = nx.DiGraph()
         nodes = ["U", "X", "M", "Y"]
         G_0.add_nodes_from(nodes)
-        G_0.add_edge("U", "X")  # instantaneous: hidden confounder -> treatment
-        G_0.add_edge("U", "Y")  # instantaneous: hidden confounder -> outcome
-        G_0.add_edge("X", "M")  # instantaneous: treatment -> mediator
+        G_0.add_edge("U", "X")  # hidden confounder -> treatment
+        G_0.add_edge("U", "Y")  # hidden confounder -> outcome
+        G_0.add_edge("X", "M")  # treatment -> mediator
 
         N = len(nodes)
         G_lags = []
         for k in range(self.max_lag):
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
-                # Topo order is [U, X, Y, M] so M=3, Y=2
-                G_k[3, 2] = 1.0  # M(t-1) -> Y(t): lagged mediation path
+                if self.use_lagged_edges:
+                    # Topo order is [U, X, Y, M] so M=3, Y=2
+                    G_k[3, 2] = 1.0  # M(t-1) -> Y(t): lagged mediation
                 for i in range(N):
                     G_k[i, i] = 1.0  # autoregressive self-loops
             G_lags.append(G_k)

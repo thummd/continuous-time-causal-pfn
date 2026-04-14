@@ -59,6 +59,16 @@ def main():
     parser.add_argument("--tscm-structure", type=str, default=None,
                         help="Train on a single TSCM structure instead of full CTP prior. "
                              "Values: back_door, front_door, observed_confounder, mediator, etc.")
+    parser.add_argument("--tscm-lag", action="store_true", default=True,
+                        help="Use lagged causal edges in TSCM structures (default: True)")
+    parser.add_argument("--no-tscm-lag", dest="tscm_lag", action="store_false",
+                        help="Use only instantaneous edges (no lagged causal edges)")
+    parser.add_argument("--intervention-scale", type=float, default=4.0,
+                        help="Scale of intervention values N(0, scale) for TSCM prior (default: 4.0)")
+    parser.add_argument("--causal-mask", type=str, default="full",
+                        choices=["full", "interpolation"],
+                        help="Causal masking mode: 'full' (zero all vars at t) or "
+                             "'interpolation' (restore treatment var A_obs at t)")
     args = parser.parse_args()
 
     # Load config
@@ -111,6 +121,9 @@ def main():
         intervention_source=args.intervention_source,
         eval_num_steps=args.eval_num_steps,
         tscm_structure=args.tscm_structure,
+        use_lagged_edges=args.tscm_lag,
+        intervention_scale=args.intervention_scale,
+        causal_mask_mode=args.causal_mask,
     )
 
 

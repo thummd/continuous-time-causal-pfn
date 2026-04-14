@@ -40,10 +40,12 @@ class TSCMPrior:
     can swap it in transparently.
     """
 
-    def __init__(self, structure: TSCMStructure, burn_in: int = 50, seed: int = 42):
-        self.sampler = TSCMSampler(structure, max_lag=1)
+    def __init__(self, structure: TSCMStructure, burn_in: int = 50, seed: int = 42,
+                 use_lagged_edges: bool = True, intervention_scale: float = 2.0):
+        self.sampler = TSCMSampler(structure, max_lag=1, use_lagged_edges=use_lagged_edges)
         self.hidden_vars = self.sampler.get_hidden_vars()
         self.burn_in = burn_in
+        self.intervention_scale = intervention_scale
         self.gen = torch.Generator().manual_seed(seed)
         self.config = {'burn_in': burn_in}
 
@@ -62,7 +64,7 @@ class TSCMPrior:
         t_lo = min(10, T - 1)
         t_hi = max(t_lo + 1, T - 10)
         int_time = int(torch.randint(t_lo, t_hi, (1,), generator=self.gen).item())
-        int_value = float(torch.randn(1, generator=self.gen).item() * 2.0)
+        int_value = float(torch.randn(1, generator=self.gen).item() * self.intervention_scale)
 
         intervention = InterventionSpec(
             targets=[int_target],
@@ -93,16 +95,23 @@ class ExtendedCausalTimePrior:
         regime_switching_prob: float = 0.15,
         intervention_source: str = "prior",
         tscm_structure: Optional[str] = None,
+        use_lagged_edges: bool = True,
+        intervention_scale: float = 2.0,
+        causal_mask_mode: str = "full",
     ):
         self.n_max = n_max
         self.t_range = t_range
         self.downstream_prob = downstream_prob
         self.intervention_source = intervention_source
+        self.causal_mask_mode = causal_mask_mode
 
         if tscm_structure is not None:
-            # Train on a single TSCM structure instead of the full CTP prior
             structure_enum = TSCMStructure(tscm_structure)
-            self.prior = TSCMPrior(structure_enum, burn_in=burn_in, seed=seed)
+            self.prior = TSCMPrior(
+                structure_enum, burn_in=burn_in, seed=seed,
+                use_lagged_edges=use_lagged_edges,
+                intervention_scale=intervention_scale,
+            )
         else:
             config = {
                 'N_max': n_max_prior,
@@ -162,12 +171,17 @@ class ExtendedCausalTimePrior:
 
         N = X_obs.shape[1]
 
-        # Causal masking: zero out X_obs at and after intervention onset
-        # so the model only sees pre-intervention observational data.
-        # This prevents information leakage from post-intervention timesteps.
+        # Causal masking: zero out X_obs at and after intervention onset.
         int_onset = min(intervention.times)
+        intervention_target = intervention.targets[0] if intervention.targets else 0
         X_obs_masked = X_obs.clone()
         X_obs_masked[int_onset:] = 0.0
+
+        if self.causal_mask_mode == "interpolation":
+            # Restore the treatment variable at int_onset with its OBSERVATIONAL
+            # value. The causal model additionally receives the intervention spec
+            # (A_int = v) via the mixer; the obs-only model only sees A_obs here.
+            X_obs_masked[int_onset, intervention_target] = X_obs[int_onset, intervention_target]
 
         # Pad to N_max
         X_obs_padded = pad_to_max_nodes(X_obs_masked, self.n_max)
@@ -177,8 +191,7 @@ class ExtendedCausalTimePrior:
         variable_mask = torch.zeros(self.n_max)
         variable_mask[:N] = 1.0
 
-        # Intervention info
-        intervention_target = intervention.targets[0] if intervention.targets else 0
+        # Intervention info (intervention_target already set above for masking)
         time_start = min(intervention.times)
         time_end = max(intervention.times)
 

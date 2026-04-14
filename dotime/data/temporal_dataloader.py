@@ -37,6 +37,9 @@ class TemporalInterventionDataLoader:
         query_mode: str = "single",
         intervention_source: str = "prior",
         tscm_structure: str = None,
+        use_lagged_edges: bool = True,
+        intervention_scale: float = 2.0,
+        causal_mask_mode: str = "full",
     ):
         self.num_steps = num_steps
         self.batch_size = batch_size
@@ -57,6 +60,9 @@ class TemporalInterventionDataLoader:
             seed=seed,
             intervention_source=intervention_source,
             tscm_structure=tscm_structure,
+            use_lagged_edges=use_lagged_edges,
+            intervention_scale=intervention_scale,
+            causal_mask_mode=causal_mask_mode,
         )
 
     def __len__(self) -> int:

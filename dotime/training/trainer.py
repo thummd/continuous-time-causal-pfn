@@ -104,6 +104,9 @@ def train(
     intervention_source: str = "prior",
     eval_num_steps: int = 20,
     tscm_structure: str = None,
+    use_lagged_edges: bool = True,
+    intervention_scale: float = 2.0,
+    causal_mask_mode: str = "full",
 ):
     """Full training pipeline for Do-Over-Time-PFN."""
 
@@ -114,6 +117,8 @@ def train(
     print(f"   Target: {target_key}")
     if tscm_structure:
         print(f"   TSCM structure: {tscm_structure} (single-structure training)")
+        print(f"   Lagged edges: {use_lagged_edges} | Intervention scale: {intervention_scale}")
+    print(f"   Causal mask: {causal_mask_mode}")
     if n_queries > 1:
         print(f"   Dense supervision: {n_queries} queries per trajectory")
     if observational_only:
@@ -183,6 +188,9 @@ def train(
         query_mode=query_mode,
         intervention_source=intervention_source,
         tscm_structure=tscm_structure,
+        use_lagged_edges=use_lagged_edges,
+        intervention_scale=intervention_scale,
+        causal_mask_mode=causal_mask_mode,
     )
 
     # Eval loader (fixed seed for consistent evaluation)
