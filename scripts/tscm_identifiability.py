@@ -465,9 +465,11 @@ def main():
                         help="Only verify data generation, no model evaluation")
     parser.add_argument("--multi-step", action="store_true",
                         help="Use multi-step interventions (for g-computation)")
-    parser.add_argument("--query-offsets", type=int, nargs="+", default=[3],
-                        help="Time offsets after intervention to query (default: 3). "
-                             "Use e.g. '1 2 3 5 10' to study effect decay.")
+    parser.add_argument("--query-offsets", type=int, nargs="+", default=[0],
+                        help="Time offsets after intervention to query (default: 0 = same time step "
+                             "as intervention). Offset 0 matches the back-door adjustment formula "
+                             "p(y_t|do(a_t)). Larger offsets predict y_{t+k}|do(a_t), which requires "
+                             "multi-step rollout for correct identification.")
     parser.add_argument("--max-lag", type=int, default=1,
                         help="Max lag K for TSCM structures (1=Markov, 2-3 for higher-order)")
     parser.add_argument("--json-out", type=str, default=None,
@@ -476,6 +478,17 @@ def main():
     parser.add_argument("--bootstrap-n", type=int, default=1000,
                         help="Number of bootstrap resamples for CI estimation (default: 1000)")
     args = parser.parse_args()
+
+    if any(o > 0 for o in args.query_offsets):
+        import warnings
+        warnings.warn(
+            f"--query-offsets contains offsets > 0: {[o for o in args.query_offsets if o > 0]}. "
+            "With offset k > 0 you are predicting p(y_{t+k} | do(a_t)), not p(y_t | do(a_t)). "
+            "The single-step back-door formula does not apply directly — correct identification "
+            "requires a multi-step rollout. Proceed only if you intend this.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     if args.verify_only:
         verify_data_generation(n_samples=args.n_samples, max_lag=args.max_lag)
