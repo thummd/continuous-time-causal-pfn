@@ -118,6 +118,11 @@ class TSCMSampler:
             return [0]  # U is always index 0
         return []
 
+    def get_outcome_var(self) -> int:
+        """Return the topological-order index of the outcome variable Y."""
+        dag = self._build_dag()
+        return dag.topo_order.index('Y')
+
     def get_intervention_target(self) -> int:
         """Return the topological-order index of the treatment variable A.
 

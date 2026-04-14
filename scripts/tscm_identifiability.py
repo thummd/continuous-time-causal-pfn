@@ -372,25 +372,22 @@ def evaluate_structure(
         X_norm = X_norm * variable_mask.unsqueeze(0)
 
         tscm_records = []
+        q_idx = sampler.get_outcome_var()  # always predict Y only
 
-        for q_idx in range(N):
-            if q_idx in hidden_vars or q_idx == int_target:
-                continue
+        for offset in query_offsets:
+            query_time_idx = min(int(min(int_times) + offset), T - 1)
 
-            for offset in query_offsets:
-                query_time_idx = min(int(min(int_times) + offset), T - 1)
+            rec = _evaluate_single_query(
+                model, X_obs, X_int, X_obs_padded, X_norm, means, stds,
+                variable_mask, int_target, int_times, q_idx, query_time_idx,
+                T, device, int_value=int_value,
+            )
+            rec['offset'] = offset
+            rec['q_idx'] = q_idx
 
-                rec = _evaluate_single_query(
-                    model, X_obs, X_int, X_obs_padded, X_norm, means, stds,
-                    variable_mask, int_target, int_times, q_idx, query_time_idx,
-                    T, device, int_value=int_value,
-                )
-                rec['offset'] = offset
-                rec['q_idx'] = q_idx
-
-                per_offset_records[offset].append(rec)
-                all_records.append(rec)
-                tscm_records.append(rec)
+            per_offset_records[offset].append(rec)
+            all_records.append(rec)
+            tscm_records.append(rec)
 
         if tscm_records:
             p = torch.tensor([r['pred'] for r in tscm_records])
