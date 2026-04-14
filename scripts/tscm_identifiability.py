@@ -18,7 +18,7 @@ import numpy as np
 from dotime.prior.tscm_sampler import TSCMSampler, TSCMStructure
 from dotime.prior.extended_prior import pad_to_max_nodes
 from dotime.eval.metrics import compute_rmse, compute_mae, compute_r2, compute_nmse
-from baselines import ExampleTrainedBaseline, AR1Baseline, Chronos2Baseline
+from baselines import ExampleTrainedBaseline, AR1Baseline
 
 # Near-zero targets are ambiguous for sign-based direction accuracy.
 # Targets with |t| < DIR_ACC_EPS are excluded from the metric and reported separately.
@@ -27,7 +27,6 @@ DIR_ACC_EPS = 0.1
 BASELINE_STRING_TO_CLASS = {
     "example": ExampleTrainedBaseline, 
     "ar1": lambda _: AR1Baseline(),
-    "chronos2": Chronos2Baseline
 }
 
 def _direction_accuracy(preds: torch.Tensor, targets: torch.Tensor, eps: float = DIR_ACC_EPS):
