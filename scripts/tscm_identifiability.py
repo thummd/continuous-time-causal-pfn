@@ -512,7 +512,10 @@ def main():
             for key in ('rmse', 'mae', 'direction_accuracy', 'effect_rmse', 'effect_mae', 'nmse', 'r2'):
                 vals = [t[key] for t in per_tscm if t.get(key) is not None]
                 mean, std, lo, hi = _bootstrap_ci(vals, n=args.bootstrap_n)
-                boot[key] = {'mean': mean, 'std': std, 'ci_low': lo, 'ci_high': hi}
+                # Also compute median (robust to outliers, especially for nMSE)
+                clean = [v for v in vals if not (isinstance(v, float) and np.isnan(v))]
+                median = float(np.median(clean)) if clean else float('nan')
+                boot[key] = {'mean': mean, 'std': std, 'ci_low': lo, 'ci_high': hi, 'median': median}
         results['bootstrap'] = boot
 
         print(f"  Queries: {results['total']} across {results['n_tscms']} TSCMs")
@@ -525,7 +528,8 @@ def main():
             if pct:
                 return f"{m:.2} ± {s:.2} ({l:.2}, {h:.2})"
             return f"{m:.4} ± {s:.4} ({l:.4}, {h:.4})"
-        print(f"  RMSE: {_fmt('rmse')} | MAE: {_fmt('mae')} | NMSE: {_fmt('nmse')} | R2 {_fmt('r2')}" )
+        nmse_med = boot.get('nmse', {}).get('median', float('nan'))
+        print(f"  RMSE: {_fmt('rmse')} | MAE: {_fmt('mae')} | nMSE: {_fmt('nmse')} (median={nmse_med:.4f}) | R2 {_fmt('r2')}" )
         n_valid = results.get('direction_n_valid', 0)
         n_excl = results.get('direction_n_excluded', 0)
         print(f"  Direction accuracy: {_fmt('direction_accuracy', pct=True)} "
@@ -557,10 +561,11 @@ def main():
                       f"Dir={r_off['direction_accuracy']:.1%}")
 
     # Summary table
-    header_w = 140
+    header_w = 155
     print("\n" + "=" * header_w)
     print(f"{'Structure':<25} {'N':>4} {'Nt':>4} "
-          f"{'RMSE':>8} {'±std':>7} {'nMSE':>6} "
+          f"{'RMSE':>8} {'±std':>7} "
+          f"{'nMSE':>8} {'med':>8} "
           f"{'Dir':>7} {'±std':>7} "
           f"{'Nv':>4} {'Nx':>4} "
           f"{'Eff.RMSE':>9} {'|Effect|':>9} {'Confound':>8}")
@@ -572,20 +577,22 @@ def main():
         b = r.get('bootstrap', {})
         rmse_m = b.get('rmse', {}).get('mean', r['rmse'])
         rmse_s = b.get('rmse', {}).get('std', 0.0)
-        nmse = r.get('nmse', float('nan'))
+        nmse_mean = b.get('nmse', {}).get('mean', r.get('nmse', float('nan')))
+        nmse_med = b.get('nmse', {}).get('median', float('nan'))
         dir_m = b.get('direction_accuracy', {}).get('mean', r['direction_accuracy'])
         dir_s = b.get('direction_accuracy', {}).get('std', 0.0)
         eff_m = b.get('effect_rmse', {}).get('mean', r['effect_rmse'])
         n_valid = r.get('direction_n_valid', 0)
         n_excl = r.get('direction_n_excluded', 0)
         print(f"{name:<25} {r['total']:>4} {r.get('n_tscms', 0):>4} "
-              f"{rmse_m:>8.4f} {rmse_s:>7.4f} {nmse:>6.3f} "
+              f"{rmse_m:>8.4f} {rmse_s:>7.4f} "
+              f"{nmse_mean:>8.3f} {nmse_med:>8.4f} "
               f"{dir_m:>6.1%} {dir_s:>6.1%} "
               f"{n_valid:>4} {n_excl:>4} "
               f"{eff_m:>9.4f} {r['mean_effect_magnitude']:>9.4f} "
               f"{r['mean_confounding']:>8.4f}")
     print("=" * header_w)
-    print(f"(N=total queries, Nt=TSCMs, Nv=direction-valid, Nx=excluded where |target|<{DIR_ACC_EPS})")
+    print(f"(N=total queries, Nt=TSCMs, nMSE=MSE/Var, med=median nMSE, Nv/Nx=direction valid/excluded |t|<{DIR_ACC_EPS})")
 
     # Per-offset summary table (if multiple offsets)
     if len(args.query_offsets) > 1:
