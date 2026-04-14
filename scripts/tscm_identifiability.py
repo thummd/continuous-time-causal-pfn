@@ -109,9 +109,6 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
             obs_shapes.append(tuple(X_obs.shape))
 
             # Pick intervention target: always the treatment variable A
-            valid_targets = [j for j in range(N) if j not in hidden_vars]
-            if not valid_targets:
-                continue
             int_target = sampler.get_intervention_target()
 
             # Create intervention: single-step do(A_t) with diverse values
@@ -163,39 +160,56 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
     return all_ok
 
 
-def compute_confounding_strength(X_obs, hidden_vars, int_target, N):
+def compute_confounding_strength(X_obs, hidden_vars, int_target, outcome_var, N):
     """Estimate confounding strength from observational data.
 
-    Measures correlation between the intervention target and other observed
-    variables, which indicates potential confounding paths.
+    Measures the raw A-Y association and the strength of observed confounders.
+    These are informative diagnostics for whether the structure has confounding.
+
+    Parameters
+    ----------
+    X_obs : Tensor (T, N)
+    hidden_vars : list of int — indices of hidden variables
+    int_target : int — index of treatment A
+    outcome_var : int — index of outcome Y
+    N : int — total number of variables
 
     Returns dict with:
-        mean_abs_corr: mean absolute correlation of int_target with other vars
-        max_abs_corr: max absolute correlation (strongest confounding path)
+        corr_A_Y:      |corr(A, Y)| — raw observational association (confounding + effect)
+        mean_confounder_corr: mean over observed non-A, non-Y variables of
+                             (|corr(X_i, A)| + |corr(X_i, Y)|) / 2 — proxy for
+                             how much each covariate acts as a confounder
     """
     observed = [i for i in range(N) if i not in hidden_vars]
-    if len(observed) < 2 or int_target not in observed:
-        return {'mean_abs_corr': float('nan'), 'max_abs_corr': float('nan')}
+    nan_result = {'corr_A_Y': float('nan'), 'mean_confounder_corr': float('nan')}
 
-    # Correlation matrix of observed variables
-    X = X_obs[:, observed].numpy()
+    if int_target not in observed or outcome_var not in observed:
+        return nan_result
+
+    X = X_obs[:, observed].float().numpy()
     if X.std(axis=0).min() < 1e-8:
-        return {'mean_abs_corr': float('nan'), 'max_abs_corr': float('nan')}
+        return nan_result
 
     corr = np.corrcoef(X, rowvar=False)
-    # Index of int_target within observed list
-    target_obs_idx = observed.index(int_target)
+    obs_A = observed.index(int_target)
+    obs_Y = observed.index(outcome_var)
 
-    # Correlations of target with other observed variables
-    other_corrs = [abs(corr[target_obs_idx, j])
-                   for j in range(len(observed)) if j != target_obs_idx]
+    corr_A_Y = abs(corr[obs_A, obs_Y])
 
-    if not other_corrs:
-        return {'mean_abs_corr': 0.0, 'max_abs_corr': 0.0}
+    # Observed covariates that are neither A nor Y
+    covariate_indices = [j for j, i in enumerate(observed)
+                         if i != int_target and i != outcome_var]
+    if covariate_indices:
+        mean_confounder_corr = float(np.mean([
+            (abs(corr[j, obs_A]) + abs(corr[j, obs_Y])) / 2.0
+            for j in covariate_indices
+        ]))
+    else:
+        mean_confounder_corr = 0.0
 
     return {
-        'mean_abs_corr': float(np.mean(other_corrs)),
-        'max_abs_corr': float(np.max(other_corrs)),
+        'corr_A_Y': float(corr_A_Y),
+        'mean_confounder_corr': mean_confounder_corr,
     }
 
 
@@ -255,8 +269,8 @@ def _aggregate_results(records, all_confounding):
     effects = torch.tensor([r['causal_effect'] for r in records])
     pred_effects = torch.tensor([r['pred_effect'] for r in records])
 
-    valid_conf = [c for c in all_confounding if not np.isnan(c['mean_abs_corr'])]
-    mean_confounding = (np.mean([c['mean_abs_corr'] for c in valid_conf])
+    valid_conf = [c for c in all_confounding if not np.isnan(c['corr_A_Y'])]
+    mean_confounding = (np.mean([c['corr_A_Y'] for c in valid_conf])
                         if valid_conf else float('nan'))
 
     dir_acc = _direction_accuracy(preds, targets)
@@ -326,12 +340,10 @@ def evaluate_structure(
         if X_obs.abs().max() > 900:
             continue
 
-        valid_targets = [i for i in range(N) if i not in hidden_vars]
-        if not valid_targets:
-            continue
         int_target = sampler.get_intervention_target()
+        q_idx = sampler.get_outcome_var()
 
-        conf = compute_confounding_strength(X_obs, hidden_vars, int_target, N)
+        conf = compute_confounding_strength(X_obs, hidden_vars, int_target, q_idx, N)
         all_confounding.append(conf)
 
         if multi_step:
@@ -372,7 +384,6 @@ def evaluate_structure(
         X_norm = X_norm * variable_mask.unsqueeze(0)
 
         tscm_records = []
-        q_idx = sampler.get_outcome_var()  # always predict Y only
 
         for offset in query_offsets:
             query_time_idx = min(int(min(int_times) + offset), T - 1)
