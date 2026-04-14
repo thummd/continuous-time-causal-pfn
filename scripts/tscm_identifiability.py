@@ -102,7 +102,7 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
             # Generate observational data
             X_obs = scm.sample_observational(T=T, burn_in=30, generator=gen)
 
-            if X_obs.abs().max() > 900:
+            if X_obs.abs().max() > 10:
                 n_divergent += 1
                 continue
 
@@ -323,7 +323,7 @@ def evaluate_structure(
         N = len(scm._topo)
 
         X_obs = scm.sample_observational(T=T, burn_in=30, generator=gen)
-        if X_obs.abs().max() > 900:
+        if X_obs.abs().max() > 10:
             continue
 
         valid_targets = [i for i in range(N) if i not in hidden_vars]
@@ -353,7 +353,7 @@ def evaluate_structure(
         X_int = scm.sample_interventional(
             T=T, intervention=intervention, burn_in=30, generator=gen,
         )
-        if X_int.abs().max() > 900:
+        if X_int.abs().max() > 10:
             continue
         # Skip all-zero samples (diverged SCMs that returned zeros)
         if X_obs.abs().max() < 1e-6 or X_int.abs().max() < 1e-6:

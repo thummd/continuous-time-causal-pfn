@@ -157,7 +157,7 @@ class ExtendedCausalTimePrior:
         for _ in range(5):
             X_obs, X_int, intervention, scm = self.prior.generate_pair(T=T)
             if (not torch.isnan(X_obs).any() and not torch.isnan(X_int).any()
-                    and X_obs.abs().max() < 500 and X_int.abs().max() < 500):
+                    and X_obs.abs().max() < 10 and X_int.abs().max() < 10):
                 break
 
         N = X_obs.shape[1]
@@ -234,7 +234,7 @@ class ExtendedCausalTimePrior:
                     T=T, intervention=new_intervention,
                     burn_in=self.prior.config.get('burn_in', 50),
                 )
-                if (not torch.isnan(X_int_new).any() and X_int_new.abs().max() < 500):
+                if (not torch.isnan(X_int_new).any() and X_int_new.abs().max() < 10):
                     X_int = X_int_new
                     X_int_padded = pad_to_max_nodes(X_int, self.n_max)
                     intervention = new_intervention

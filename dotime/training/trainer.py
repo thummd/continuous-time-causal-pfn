@@ -157,7 +157,7 @@ def train(
     tau_levels = None
     if pinball_weight > 0:
         if pinball_quantiles is None:
-            pinball_quantiles = [0.1, 0.25, 0.5, 0.75, 0.9]
+            pinball_quantiles = [0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95]
         tau_levels = torch.tensor(pinball_quantiles, device=device, dtype=torch.float32)
         print(f"   Pinball loss: weight={pinball_weight}, quantiles={pinball_quantiles}")
 
@@ -199,6 +199,12 @@ def train(
     best_eval_loss = float('inf')
     start_time = time.time()
     running_loss = 0.0
+
+    # Per-step loss log for spike detection
+    step_log_path = os.path.join(save_dir, "step_losses.csv")
+    os.makedirs(save_dir, exist_ok=True)
+    step_log_file = open(step_log_path, "w")
+    step_log_file.write("step,loss,y_max,lr\n")
 
     for step, batch in enumerate(train_loader):
         optimizer.zero_grad()
@@ -249,7 +255,12 @@ def train(
         optimizer.step()
         scheduler.step()
 
-        running_loss += loss.item()
+        loss_val = loss.item()
+        running_loss += loss_val
+        lr_now = scheduler.get_last_lr()[0]
+        step_log_file.write(f"{step},{loss_val:.6f},{y_max:.4f},{lr_now:.2e}\n")
+        if step % 100 == 0:
+            step_log_file.flush()
 
         # Log + evaluate
         if (step + 1) % eval_every == 0:
@@ -294,7 +305,9 @@ def train(
                 }, save_path)
 
     total_time = time.time() - start_time
+    step_log_file.close()
     print(f"\n4. Training complete! Total time: {total_time:.0f}s")
+    print(f"   Per-step losses saved to {step_log_path}")
     print(f"   Best eval loss: {best_eval_loss:.4f}")
 
     return model

@@ -19,7 +19,7 @@ class QuantileHead(nn.Module):
     ):
         super().__init__()
         if tau_levels is None:
-            tau_levels = [0.1, 0.25, 0.5, 0.75, 0.9]
+            tau_levels = [0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95]
         self.n_quantiles = len(tau_levels)
         self.register_buffer(
             'tau_levels', torch.tensor(tau_levels, dtype=torch.float32)
