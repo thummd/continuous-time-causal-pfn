@@ -3,8 +3,9 @@ from typing import Dict, List
 import torch
 from dotime.model.do_over_time_pfn import DoOverTimePFN
 from pfns.model.bar_distribution import FullSupportBarDistribution
-from chronos import Chronos2Pipeline
+from chronos import BaseChronosPipeline
 import pandas as pd
+import numpy as np
 
 
 class SinglePointTimeSeriesBaseline(ABC):
@@ -74,32 +75,50 @@ class ObsPFNBD(TrainedBaseline):
 
     @property
     def checkpoint_path(self) -> str:
-        return "FIXME"
+        return "/work/dlclarge1/robertsj-dotpfn/do-over-time-pfn/checkpoints/sanity2_/sanity2_bd_obs_only/do_over_time_pfn_best.pt"
     
 class DoTPFNBD(TrainedBaseline):
 
     @property
     def checkpoint_path(self) -> str:
-        return "FIXME"
+        return "/work/dlclarge1/robertsj-dotpfn/do-over-time-pfn/checkpoints/sanity2_/sanity2_bd_causal/do_over_time_pfn_best.pt"
     
-class DoTPFNFD(TrainedBaseline):
+class Chronos2Baseline(SinglePointTimeSeriesBaseline):
 
-    @property
-    def checkpoint_path(self) -> str:
-        return "FIXME"
-    
+    def __init__(self, device: str = "cpu"):
+        self.device = device
+        self.pipeline = BaseChronosPipeline.from_pretrained("amazon/chronos-2", device_map=device)
 
-class ObsPFNFD(TrainedBaseline):
+    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        context_df = pd.DataFrame(batch["X_obs_norm"].squeeze(0).cpu().numpy())
 
-    @property
-    def checkpoint_path(self) -> str:
-        return "FIXME"
-    
+        batch["X_obs_norm"].squeeze(0)[-1, :]
 
+        future_df = context_df.iloc[[-1]]
+        future_df.iloc[:, batch["variable_mask"].squeeze(0).cpu().numpy() == 1] = np.nan
+        future_df.iloc[:, batch["intervention_target"].cpu().numpy().item()] = batch["intervention_value"].cpu().numpy().item()
+
+        context_df["item_id"] = 0
+        future_df["item_id"] = 0
+        context_df["timestamp"] = np.arange(len(context_df))
+        future_df["timestamp"] = len(context_df)
+        future_df = future_df.drop(columns=[batch["query_target"].cpu().numpy().item()])
+
+        pred_df = self.pipeline.predict_df(
+            context_df,
+            future_df=future_df,
+            prediction_length=1,
+            quantile_levels=[0.1, 0.5, 0.9],
+            target=batch["query_target"].cpu().numpy().item(),
+        )
+
+        return pred_df["predictions"], torch.tensor([pred_df["0.1"], pred_df["0.5"], pred_df["0.9"]])
         
 
+class ZeroBaseline(SinglePointTimeSeriesBaseline):
 
-
+    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        return 0, None
 
     
 
