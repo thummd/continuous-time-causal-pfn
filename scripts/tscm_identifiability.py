@@ -108,11 +108,11 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
 
             obs_shapes.append(tuple(X_obs.shape))
 
-            # Pick intervention target (first non-hidden variable)
+            # Pick intervention target: always the treatment variable A
             valid_targets = [j for j in range(N) if j not in hidden_vars]
             if not valid_targets:
                 continue
-            int_target = valid_targets[0]
+            int_target = sampler.get_intervention_target()
 
             # Create intervention: single-step do(A_t) with diverse values
             int_times = [max(0, T - 5)]
@@ -329,7 +329,7 @@ def evaluate_structure(
         valid_targets = [i for i in range(N) if i not in hidden_vars]
         if not valid_targets:
             continue
-        int_target = valid_targets[0]
+        int_target = sampler.get_intervention_target()
 
         conf = compute_confounding_strength(X_obs, hidden_vars, int_target, N)
         all_confounding.append(conf)
