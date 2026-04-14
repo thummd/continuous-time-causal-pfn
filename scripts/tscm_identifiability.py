@@ -18,12 +18,16 @@ import numpy as np
 from dotime.prior.tscm_sampler import TSCMSampler, TSCMStructure
 from dotime.prior.extended_prior import pad_to_max_nodes
 from dotime.eval.metrics import compute_rmse, compute_mae, compute_r2, compute_nmse
-
+from baselines import ExampleTrainedBaseline, AR1Baseline
 
 # Near-zero targets are ambiguous for sign-based direction accuracy.
 # Targets with |t| < DIR_ACC_EPS are excluded from the metric and reported separately.
 DIR_ACC_EPS = 0.1
 
+BASELINE_STRING_TO_CLASS = {
+    "example": ExampleTrainedBaseline, 
+    "ar1": lambda _: AR1Baseline(),
+}
 
 def _direction_accuracy(preds: torch.Tensor, targets: torch.Tensor, eps: float = DIR_ACC_EPS):
     """Sign-consistent direction accuracy, excluding near-zero targets.
@@ -228,11 +232,7 @@ def _evaluate_single_query(
         'query_time': torch.tensor([query_time_idx / T], dtype=torch.float32, device=device),
     }
 
-    with torch.no_grad():
-        output = model(batch)
-        pred = model.head.predict_mean(output)
-
-    pred_val = pred.cpu().item()
+    pred_val, output = model.forward(batch)
     obs_norm = (y_obs - means[q_idx].item()) / stds[q_idx].item()
     pred_effect = pred_val - obs_norm
 
@@ -241,7 +241,7 @@ def _evaluate_single_query(
         'target': y_true_norm,
         'causal_effect': causal_effect_norm,
         'pred_effect': pred_effect,
-        'output': output.cpu(),
+        'output': output,
     }
 
 
@@ -450,7 +450,7 @@ def evaluate_structure(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--baseline", type=str, default=None)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--n-samples", type=int, default=50)
     parser.add_argument("--verify-only", action="store_true",
@@ -473,27 +473,10 @@ def main():
         verify_data_generation(n_samples=args.n_samples, max_lag=args.max_lag)
         return
 
-    if args.checkpoint is None:
-        parser.error("--checkpoint is required unless --verify-only is set")
+    if args.baseline is None:
+        parser.error("--baseline is required unless --verify-only is set")
 
-    # Load model
-    from dotime.model.do_over_time_pfn import DoOverTimePFN
-
-    ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
-    config = ckpt['config']
-    model = DoOverTimePFN(**config)
-    model.load_state_dict(ckpt['model_state_dict'], strict=False)
-
-    # Restore bar distribution if applicable
-    head_type = ckpt.get('head_type', 'bar')
-    if head_type == 'bar' and ckpt.get('borders') is not None:
-        from pfns.model.bar_distribution import FullSupportBarDistribution
-        borders = ckpt['borders']
-        bar_dist = FullSupportBarDistribution(borders)
-        model.bar_head.set_bar_distribution(bar_dist, borders)
-
-    model = model.to(args.device)
-    model.eval()
+    model = BASELINE_STRING_TO_CLASS[args.baseline](args.device)
 
     print("=" * 80)
     print("TSCM Identifiability Case Studies")
@@ -621,9 +604,9 @@ def main():
     # JSON export
     json_path = args.json_out
     if json_path is None:
-        ckpt_dir = os.path.basename(os.path.dirname(os.path.abspath(args.checkpoint)))
+        ckpt_dir = os.path.basename(os.path.dirname(os.path.abspath(model.checkpoint_path)))
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        json_path = os.path.join(repo_root, 'results', ckpt_dir, 'tscm_eval.json')
+        json_path = os.path.join(repo_root, 'results', ckpt_dir, f'{args.baseline}_eval.json')
 
     def _json_clean(obj):
         """Recursively convert non-JSON-serializable values to primitives."""
@@ -640,7 +623,7 @@ def main():
         return obj
 
     export = {
-        'checkpoint': args.checkpoint,
+        'checkpoint': model.checkpoint_path,
         'n_samples': args.n_samples,
         'max_lag': args.max_lag,
         'multi_step': args.multi_step,
