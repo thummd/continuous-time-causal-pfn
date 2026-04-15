@@ -18,12 +18,33 @@ import numpy as np
 from dotime.prior.tscm_sampler import TSCMSampler, TSCMStructure
 from dotime.prior.extended_prior import pad_to_max_nodes
 from dotime.eval.metrics import compute_rmse, compute_mae, compute_r2, compute_nmse
+from baselines import (
+    AR1Baseline, 
+    Chronos2Observational,
+    BackDoorTabPFNInterventional,
+    BackDoorTabPFNObservational,
+    BackDoorTabPFNCausalEffect,
+    BackDoorDoTPFNCausalEffect,
+    BackDoorObsPFNCausalEffect,
+    ZeroBaseline
+)
 
+from tqdm import tqdm
 
 # Near-zero targets are ambiguous for sign-based direction accuracy.
 # Targets with |t| < DIR_ACC_EPS are excluded from the metric and reported separately.
 DIR_ACC_EPS = 0.1
 
+BASELINE_STRING_TO_CLASS = {
+    "AR1Baseline": lambda _: AR1Baseline(),
+    "ZeroBaseline": lambda _: ZeroBaseline(),
+    "BackDoorTabPFNInterventional": BackDoorTabPFNInterventional,
+    "BackDoorTabPFNObservational": BackDoorTabPFNObservational,
+    "BackDoorTabPFNCausalEffect": BackDoorTabPFNCausalEffect,
+    "Chronos2Observational": Chronos2Observational,
+    "BackDoorDoTPFNCausalEffect": BackDoorDoTPFNCausalEffect,
+    "BackDoorObsPFNCausalEffect": BackDoorObsPFNCausalEffect
+}
 
 def _direction_accuracy(preds: torch.Tensor, targets: torch.Tensor, eps: float = DIR_ACC_EPS):
     """Sign-consistent direction accuracy, excluding near-zero targets.
@@ -112,11 +133,8 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1,
 
             obs_shapes.append(tuple(X_obs.shape))
 
-            # Pick intervention target (first non-hidden variable)
-            valid_targets = [j for j in range(N) if j not in hidden_vars]
-            if not valid_targets:
-                continue
-            int_target = valid_targets[0]
+            # Pick intervention target: always the treatment variable A
+            int_target = sampler.get_intervention_target()
 
             # Create intervention: single-step do(A_t) with diverse values
             int_times = [max(0, T_sample - 5)]
@@ -170,39 +188,56 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1,
     return all_ok
 
 
-def compute_confounding_strength(X_obs, hidden_vars, int_target, N):
+def compute_confounding_strength(X_obs, hidden_vars, int_target, outcome_var, N):
     """Estimate confounding strength from observational data.
 
-    Measures correlation between the intervention target and other observed
-    variables, which indicates potential confounding paths.
+    Measures the raw A-Y association and the strength of observed confounders.
+    These are informative diagnostics for whether the structure has confounding.
+
+    Parameters
+    ----------
+    X_obs : Tensor (T, N)
+    hidden_vars : list of int — indices of hidden variables
+    int_target : int — index of treatment A
+    outcome_var : int — index of outcome Y
+    N : int — total number of variables
 
     Returns dict with:
-        mean_abs_corr: mean absolute correlation of int_target with other vars
-        max_abs_corr: max absolute correlation (strongest confounding path)
+        corr_A_Y:      |corr(A, Y)| — raw observational association (confounding + effect)
+        mean_confounder_corr: mean over observed non-A, non-Y variables of
+                             (|corr(X_i, A)| + |corr(X_i, Y)|) / 2 — proxy for
+                             how much each covariate acts as a confounder
     """
     observed = [i for i in range(N) if i not in hidden_vars]
-    if len(observed) < 2 or int_target not in observed:
-        return {'mean_abs_corr': float('nan'), 'max_abs_corr': float('nan')}
+    nan_result = {'corr_A_Y': float('nan'), 'mean_confounder_corr': float('nan')}
 
-    # Correlation matrix of observed variables
-    X = X_obs[:, observed].numpy()
+    if int_target not in observed or outcome_var not in observed:
+        return nan_result
+
+    X = X_obs[:, observed].float().numpy()
     if X.std(axis=0).min() < 1e-8:
-        return {'mean_abs_corr': float('nan'), 'max_abs_corr': float('nan')}
+        return nan_result
 
     corr = np.corrcoef(X, rowvar=False)
-    # Index of int_target within observed list
-    target_obs_idx = observed.index(int_target)
+    obs_A = observed.index(int_target)
+    obs_Y = observed.index(outcome_var)
 
-    # Correlations of target with other observed variables
-    other_corrs = [abs(corr[target_obs_idx, j])
-                   for j in range(len(observed)) if j != target_obs_idx]
+    corr_A_Y = abs(corr[obs_A, obs_Y])
 
-    if not other_corrs:
-        return {'mean_abs_corr': 0.0, 'max_abs_corr': 0.0}
+    # Observed covariates that are neither A nor Y
+    covariate_indices = [j for j, i in enumerate(observed)
+                         if i != int_target and i != outcome_var]
+    if covariate_indices:
+        mean_confounder_corr = float(np.mean([
+            (abs(corr[j, obs_A]) + abs(corr[j, obs_Y])) / 2.0
+            for j in covariate_indices
+        ]))
+    else:
+        mean_confounder_corr = 0.0
 
     return {
-        'mean_abs_corr': float(np.mean(other_corrs)),
-        'max_abs_corr': float(np.max(other_corrs)),
+        'corr_A_Y': float(corr_A_Y),
+        'mean_confounder_corr': mean_confounder_corr,
     }
 
 
@@ -235,11 +270,7 @@ def _evaluate_single_query(
         'query_time': torch.tensor([query_time_idx / T], dtype=torch.float32, device=device),
     }
 
-    with torch.no_grad():
-        output = model(batch)
-        pred = model.head.predict_mean(output)
-
-    pred_val = pred.cpu().item()
+    pred_val, output = model.forward(batch)
     obs_norm = (y_obs - means[q_idx].item()) / stds[q_idx].item()
     pred_effect = pred_val - obs_norm
 
@@ -248,7 +279,7 @@ def _evaluate_single_query(
         'target': y_true_norm,
         'causal_effect': causal_effect_norm,
         'pred_effect': pred_effect,
-        'output': output.cpu(),
+        'output': output,
     }
 
 
@@ -262,8 +293,8 @@ def _aggregate_results(records, all_confounding):
     effects = torch.tensor([r['causal_effect'] for r in records])
     pred_effects = torch.tensor([r['pred_effect'] for r in records])
 
-    valid_conf = [c for c in all_confounding if not np.isnan(c['mean_abs_corr'])]
-    mean_confounding = (np.mean([c['mean_abs_corr'] for c in valid_conf])
+    valid_conf = [c for c in all_confounding if not np.isnan(c['corr_A_Y'])]
+    mean_confounding = (np.mean([c['corr_A_Y'] for c in valid_conf])
                         if valid_conf else float('nan'))
 
     dir_acc = _direction_accuracy(preds, targets)
@@ -332,12 +363,10 @@ def evaluate_structure(
         if X_obs.abs().max() > 10:
             continue
 
-        valid_targets = [i for i in range(N) if i not in hidden_vars]
-        if not valid_targets:
-            continue
-        int_target = valid_targets[0]
+        int_target = sampler.get_intervention_target()
+        q_idx = sampler.get_outcome_var()
 
-        conf = compute_confounding_strength(X_obs, hidden_vars, int_target, N)
+        conf = compute_confounding_strength(X_obs, hidden_vars, int_target, q_idx, N)
         all_confounding.append(conf)
 
         if multi_step:
@@ -379,24 +408,20 @@ def evaluate_structure(
 
         tscm_records = []
 
-        for q_idx in range(N):
-            if q_idx in hidden_vars or q_idx == int_target:
-                continue
+        for offset in query_offsets:
+            query_time_idx = min(int(min(int_times) + offset), T - 1)
 
-            for offset in query_offsets:
-                query_time_idx = min(int(min(int_times) + offset), T_sample - 1)
+            rec = _evaluate_single_query(
+                model, X_obs, X_int, X_obs_padded, X_norm, means, stds,
+                variable_mask, int_target, int_times, q_idx, query_time_idx,
+                T_sample, device, int_value=int_value,
+            )
+            rec['offset'] = offset
+            rec['q_idx'] = q_idx
 
-                rec = _evaluate_single_query(
-                    model, X_obs, X_int, X_obs_padded, X_norm, means, stds,
-                    variable_mask, int_target, int_times, q_idx, query_time_idx,
-                    T_sample, device, int_value=int_value,
-                )
-                rec['offset'] = offset
-                rec['q_idx'] = q_idx
-
-                per_offset_records[offset].append(rec)
-                all_records.append(rec)
-                tscm_records.append(rec)
+            per_offset_records[offset].append(rec)
+            all_records.append(rec)
+            tscm_records.append(rec)
 
         if tscm_records:
             p = torch.tensor([r['pred'] for r in tscm_records])
@@ -453,16 +478,19 @@ def evaluate_structure(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--baseline", type=str, default=None)
+    parser.add_argument("--case-study", type=str, default=None)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--n-samples", type=int, default=50)
     parser.add_argument("--verify-only", action="store_true",
                         help="Only verify data generation, no model evaluation")
     parser.add_argument("--multi-step", action="store_true",
                         help="Use multi-step interventions (for g-computation)")
-    parser.add_argument("--query-offsets", type=int, nargs="+", default=[3],
-                        help="Time offsets after intervention to query (default: 3). "
-                             "Use e.g. '1 2 3 5 10' to study effect decay.")
+    parser.add_argument("--query-offsets", type=int, nargs="+", default=[0],
+                        help="Time offsets after intervention to query (default: 0 = same time step "
+                             "as intervention). Offset 0 matches the back-door adjustment formula "
+                             "p(y_t|do(a_t)). Larger offsets predict y_{t+k}|do(a_t), which requires "
+                             "multi-step rollout for correct identification.")
     parser.add_argument("--max-lag", type=int, default=1,
                         help="Max lag K for TSCM structures (1=Markov, 2-3 for higher-order)")
     parser.add_argument("--json-out", type=str, default=None,
@@ -485,32 +513,26 @@ def main():
     if args.T is None and args.t_range is None:
         args.T = 50
 
+    if any(o > 0 for o in args.query_offsets):
+        import warnings
+        warnings.warn(
+            f"--query-offsets contains offsets > 0: {[o for o in args.query_offsets if o > 0]}. "
+            "With offset k > 0 you are predicting p(y_{{t+k}} | do(a_t)), not p(y_t | do(a_t)). "
+            "The single-step back-door formula does not apply directly — correct identification "
+            "requires a multi-step rollout. Proceed only if you intend this.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     if args.verify_only:
         verify_data_generation(n_samples=args.n_samples, max_lag=args.max_lag,
                                t_range=tuple(args.t_range) if args.t_range else None)
         return
 
-    if args.checkpoint is None:
-        parser.error("--checkpoint is required unless --verify-only is set")
+    if args.baseline is None:
+        parser.error("--baseline is required unless --verify-only is set")
 
-    # Load model
-    from dotime.model.do_over_time_pfn import DoOverTimePFN
-
-    ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
-    config = ckpt['config']
-    model = DoOverTimePFN(**config)
-    model.load_state_dict(ckpt['model_state_dict'], strict=False)
-
-    # Restore bar distribution if applicable
-    head_type = ckpt.get('head_type', 'bar')
-    if head_type == 'bar' and ckpt.get('borders') is not None:
-        from pfns.model.bar_distribution import FullSupportBarDistribution
-        borders = ckpt['borders']
-        bar_dist = FullSupportBarDistribution(borders)
-        model.bar_head.set_bar_distribution(bar_dist, borders)
-
-    model = model.to(args.device)
-    model.eval()
+    model = BASELINE_STRING_TO_CLASS[args.baseline](args.device)
 
     print("=" * 80)
     print("TSCM Identifiability Case Studies")
@@ -524,6 +546,10 @@ def main():
     all_results = {}
     for structure in TSCMStructure:
         print(f"\n--- {structure.value} ---")
+
+        if str(structure.value) != args.case_study:
+            continue
+
         results = evaluate_structure(
             model, structure, n_samples=args.n_samples,
             T=args.T if args.T is not None else 50,
@@ -653,9 +679,9 @@ def main():
     # JSON export
     json_path = args.json_out
     if json_path is None:
-        ckpt_dir = os.path.basename(os.path.dirname(os.path.abspath(args.checkpoint)))
+        ckpt_dir = os.path.basename(os.path.dirname(os.path.abspath(model.checkpoint_path)))
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        json_path = os.path.join(repo_root, 'results', ckpt_dir, 'tscm_eval.json')
+        json_path = os.path.join(repo_root, 'results', ckpt_dir, f'{args.baseline}_eval.json')
 
     def _json_clean(obj):
         """Recursively convert non-JSON-serializable values to primitives."""
@@ -672,7 +698,7 @@ def main():
         return obj
 
     export = {
-        'checkpoint': args.checkpoint,
+        'checkpoint': model.checkpoint_path,
         'n_samples': args.n_samples,
         'T': args.T,
         't_range': args.t_range,

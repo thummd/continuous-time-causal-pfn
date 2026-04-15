@@ -3,6 +3,13 @@
 Generates specific causal structures (confounder, mediator, etc.)
 with random mechanisms and noise, enabling systematic identifiability
 analysis of the trained model.
+
+Variable naming convention (consistent across all structures):
+  A  - treatment (always the intervention target)
+  Y  - outcome   (always the query target)
+  M  - mediator
+  X  - observed confounder or instrument
+  U  - unobserved (hidden) confounder
 """
 
 import torch
@@ -30,17 +37,17 @@ class TSCMStructure(Enum):
     - Trivially identified: RCT_NO_CONFOUNDING
       No confounding => p(Y|do(A)) = p(Y|A).
     - IV: INSTRUMENTAL_VARIABLE
-      Z -> A -> Y with hidden confounding U -> A, U -> Y.
+      X -> A -> Y with hidden confounding U -> A, U -> Y.
     - Non-identifiable: UNOBSERVED_CONFOUNDER
       Hidden confounder, no mediator or instrument. Tests model robustness.
     """
-    OBSERVED_CONFOUNDER = "observed_confounder"       # Z -> X, Z -> Y (backdoor)
-    MEDIATOR = "mediator"                              # X -> M -> Y (frontdoor, trivial)
-    CONFOUNDER_MEDIATOR = "confounder_mediator"        # Z -> X -> M -> Y, Z -> Y (backdoor)
-    UNOBSERVED_CONFOUNDER = "unobserved_confounder"    # U -> X, U -> Y (non-identifiable)
-    BACK_DOOR = "back_door"                            # Z -> X, Z -> Y, X -> Y (backdoor)
-    FRONT_DOOR = "front_door"                          # X -> M -> Y, U -> X, U -> Y (frontdoor)
-    INSTRUMENTAL_VARIABLE = "instrumental_variable"    # Z -> A -> Y, U -> A, U -> Y (IV)
+    OBSERVED_CONFOUNDER = "observed_confounder"       # X -> A, X -> Y (backdoor)
+    MEDIATOR = "mediator"                              # A -> M -> Y (frontdoor, trivial)
+    CONFOUNDER_MEDIATOR = "confounder_mediator"        # X -> A -> M -> Y, X -> Y (backdoor)
+    UNOBSERVED_CONFOUNDER = "unobserved_confounder"    # U -> A, U -> Y (non-identifiable)
+    BACK_DOOR = "back_door"                            # X -> A, X -> Y, A -> Y (backdoor)
+    FRONT_DOOR = "front_door"                          # A -> M -> Y, U -> A, U -> Y (frontdoor)
+    INSTRUMENTAL_VARIABLE = "instrumental_variable"    # X -> A -> Y, U -> A, U -> Y (IV)
     RCT_NO_CONFOUNDING = "rct_no_confounding"          # A -> Y (trivially identified)
 
 
@@ -58,6 +65,13 @@ class TSCMSampler:
 
     Unlike CausalTimePrior which randomly samples graph structure,
     this builds a fixed named structure with random mechanisms/noise.
+
+    All structures use the convention:
+      A = treatment (intervention target)
+      Y = outcome   (query target)
+      M = mediator
+      X = observed confounder / instrument
+      U = unobserved confounder (hidden, index 0 when present)
     """
 
     def __init__(
@@ -94,14 +108,31 @@ class TSCMSampler:
         return TemporalSCM(dag, mechanisms, noise, device=self.device)
 
     def get_hidden_vars(self) -> List[int]:
-        """Return indices of hidden (unobserved) variables, if any."""
+        """Return indices of hidden (unobserved) variables, if any.
+
+        U is always placed first (index 0) when present.
+        """
         if self.structure in (
             TSCMStructure.UNOBSERVED_CONFOUNDER,
             TSCMStructure.FRONT_DOOR,
             TSCMStructure.INSTRUMENTAL_VARIABLE,
         ):
-            return [0]  # U is first variable
+            return [0]  # U is always index 0
         return []
+
+    def get_outcome_var(self) -> int:
+        """Return the topological-order index of the outcome variable Y."""
+        dag = self._build_dag()
+        return dag.topo_order.index('Y')
+
+    def get_intervention_target(self) -> int:
+        """Return the topological-order index of the treatment variable A.
+
+        Use this instead of valid_targets[0] in evaluation code to ensure
+        the correct variable is intervened upon for each structure.
+        """
+        dag = self._build_dag()
+        return dag.topo_order.index('A')
 
     def _build_dag(self) -> TemporalDAG:
         """Construct a TemporalDAG for the specified structure."""
@@ -111,31 +142,40 @@ class TSCMSampler:
     # --- Structure builders ---
 
     def _build_observed_confounder(self) -> TemporalDAG:
-        """Z -> X, Z -> Y. All observed. Lag on Z -> Y."""
+        """X -> A (inst), X(t-1) -> Y(t) (lagged). Backdoor via observed X.
+
+        Topo order: ['X', 'Y', 'A']  (Y has no G_0 parents, A has parent X).
+        G_lags indices follow topo order: X=0, Y=1, A=2.
+        """
         G_0 = nx.DiGraph()
-        nodes = ["Z", "X", "Y"]
+        nodes = ["X", "A", "Y"]
         G_0.add_nodes_from(nodes)
-        G_0.add_edge("Z", "X")  # instantaneous
-        # Z -> Y via lag
+        G_0.add_edge("X", "A")  # instantaneous: confounder -> treatment
+        # X -> Y via lag only (no instantaneous path from A to Y)
+
+        # Build the lag matrix using topo-order indices, not insertion indices.
+        # nx.topological_sort gives ['X', 'Y', 'A'] for this graph, so:
+        #   topo index 0 = X,  1 = Y,  2 = A
+        topo = list(nx.topological_sort(G_0))
+        x_i = topo.index("X")
+        y_i = topo.index("Y")
 
         N = len(nodes)
         G_lags = []
         for k in range(self.max_lag):
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:  # lag-1
-                G_k[0, 2] = 1.0  # Z(t-1) -> Y(t)
-                # Autoregressive
+                G_k[x_i, y_i] = 1.0  # X(t-1) -> Y(t)
                 for i in range(N):
-                    G_k[i, i] = 1.0
+                    G_k[i, i] = 1.0  # autoregressive
             G_lags.append(G_k)
 
-        topo = list(nx.topological_sort(G_0))
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_mediator(self) -> TemporalDAG:
-        """X -> M -> Y with lag on X -> M."""
+        """A(t-1) -> M(t) (lagged), M -> Y (inst). Front-door via mediator M."""
         G_0 = nx.DiGraph()
-        nodes = ["X", "M", "Y"]
+        nodes = ["A", "M", "Y"]
         G_0.add_nodes_from(nodes)
         G_0.add_edge("M", "Y")  # instantaneous
 
@@ -144,21 +184,21 @@ class TSCMSampler:
         for k in range(self.max_lag):
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
-                G_k[0, 1] = 1.0  # X(t-1) -> M(t)
+                G_k[0, 1] = 1.0  # A(t-1) -> M(t)
                 for i in range(N):
-                    G_k[i, i] = 1.0
+                    G_k[i, i] = 1.0  # autoregressive
             G_lags.append(G_k)
 
         topo = list(nx.topological_sort(G_0))
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_confounder_mediator(self) -> TemporalDAG:
-        """Z -> X -> M -> Y, Z -> Y."""
+        """X -> A -> M -> Y (inst), X(t-1) -> Y(t) (lagged). Backdoor + mediator."""
         G_0 = nx.DiGraph()
-        nodes = ["Z", "X", "M", "Y"]
+        nodes = ["X", "A", "M", "Y"]
         G_0.add_nodes_from(nodes)
-        G_0.add_edge("Z", "X")  # instantaneous
-        G_0.add_edge("X", "M")  # instantaneous
+        G_0.add_edge("X", "A")  # instantaneous
+        G_0.add_edge("A", "M")  # instantaneous
         G_0.add_edge("M", "Y")  # instantaneous
 
         N = len(nodes)
@@ -166,20 +206,20 @@ class TSCMSampler:
         for k in range(self.max_lag):
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
-                G_k[0, 3] = 1.0  # Z(t-1) -> Y(t)
+                G_k[0, 3] = 1.0  # X(t-1) -> Y(t)
                 for i in range(N):
-                    G_k[i, i] = 1.0
+                    G_k[i, i] = 1.0  # autoregressive
             G_lags.append(G_k)
 
         topo = list(nx.topological_sort(G_0))
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_unobserved_confounder(self) -> TemporalDAG:
-        """U -> X, U -> Y where U is hidden (index 0)."""
+        """U -> A, U -> Y (inst). U hidden (index 0). Non-identifiable."""
         G_0 = nx.DiGraph()
-        nodes = ["U", "X", "Y"]
+        nodes = ["U", "A", "Y"]
         G_0.add_nodes_from(nodes)
-        G_0.add_edge("U", "X")  # instantaneous
+        G_0.add_edge("U", "A")  # instantaneous
         G_0.add_edge("U", "Y")  # instantaneous
 
         N = len(nodes)
@@ -188,25 +228,29 @@ class TSCMSampler:
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
                 for i in range(N):
-                    G_k[i, i] = 1.0
+                    G_k[i, i] = 1.0  # autoregressive
             G_lags.append(G_k)
 
         topo = list(nx.topological_sort(G_0))
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_back_door(self) -> TemporalDAG:
-        """X -> A (inst.), A -> Y (inst.), X(t-1) -> Y(t) (lagged if enabled).
+        """X -> A, A -> Y (inst), X -> Y (inst), X(t-1) -> Y(t) (lagged if enabled).
 
         X = confounder, A = treatment, Y = outcome.
-        X causes both A and Y. Backdoor adjustment requires conditioning on X.
-        The lagged X(t-1)->Y(t) edge (when use_lagged_edges=True) makes the
-        confounding observable from history.
+        X satisfies the back-door criterion. When use_lagged_edges=True,
+        X(t-1)->Y(t) is added as a lagged edge making confounding observable.
         """
         G_0 = nx.DiGraph()
         nodes = ["X", "A", "Y"]
         G_0.add_nodes_from(nodes)
         G_0.add_edge("X", "A")  # confounder -> treatment
+        G_0.add_edge("X", "Y")  # confounder -> outcome (instantaneous)
         G_0.add_edge("A", "Y")  # treatment -> outcome
+
+        topo = list(nx.topological_sort(G_0))
+        x_i = topo.index("X")
+        y_i = topo.index("Y")
 
         N = len(nodes)
         G_lags = []
@@ -214,27 +258,31 @@ class TSCMSampler:
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
                 if self.use_lagged_edges:
-                    G_k[0, 2] = 1.0  # X(t-1) -> Y(t): lagged confounding
+                    G_k[x_i, y_i] = 1.0  # X(t-1) -> Y(t): lagged confounding
                 for i in range(N):
-                    G_k[i, i] = 1.0  # autoregressive self-loops
+                    G_k[i, i] = 1.0  # autoregressive
             G_lags.append(G_k)
 
-        topo = list(nx.topological_sort(G_0))
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_front_door(self) -> TemporalDAG:
-        """U -> X, U -> Y (inst.), X -> M (inst.), M(t-1) -> Y(t) (lagged if enabled).
+        """A -> M (inst), M -> Y (inst), U -> A, U -> Y (inst). M(t-1)->Y(t) lagged if enabled.
 
-        U = hidden confounder, X = treatment, M = mediator, Y = outcome.
-        M satisfies the front-door criterion. The lagged M(t-1)->Y(t) edge
-        (when use_lagged_edges=True) makes the mediation observable from history.
+        U = hidden confounder, A = treatment, M = mediator, Y = outcome.
+        M satisfies the front-door criterion. When use_lagged_edges=True,
+        M(t-1)->Y(t) is added making mediation observable from history.
         """
         G_0 = nx.DiGraph()
-        nodes = ["U", "X", "M", "Y"]
+        nodes = ["U", "A", "M", "Y"]
         G_0.add_nodes_from(nodes)
-        G_0.add_edge("U", "X")  # hidden confounder -> treatment
+        G_0.add_edge("U", "A")  # hidden confounder -> treatment
         G_0.add_edge("U", "Y")  # hidden confounder -> outcome
-        G_0.add_edge("X", "M")  # treatment -> mediator
+        G_0.add_edge("A", "M")  # treatment -> mediator
+        G_0.add_edge("M", "Y")  # mediator -> outcome
+
+        topo = list(nx.topological_sort(G_0))
+        m_i = topo.index("M")
+        y_i = topo.index("Y")
 
         N = len(nodes)
         G_lags = []
@@ -242,23 +290,22 @@ class TSCMSampler:
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
                 if self.use_lagged_edges:
-                    # Topo order is [U, X, Y, M] so M=3, Y=2
-                    G_k[3, 2] = 1.0  # M(t-1) -> Y(t): lagged mediation
+                    G_k[m_i, y_i] = 1.0  # M(t-1) -> Y(t): lagged mediation
                 for i in range(N):
-                    G_k[i, i] = 1.0  # autoregressive self-loops
+                    G_k[i, i] = 1.0  # autoregressive
             G_lags.append(G_k)
 
         topo = list(nx.topological_sort(G_0))
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_instrumental_variable(self) -> TemporalDAG:
-        """Z -> A -> Y, U -> A, U -> Y. U hidden. Z is an instrument for A->Y."""
+        """X -> A -> Y (inst), U -> A, U -> Y (inst). U hidden. X is instrument."""
         G_0 = nx.DiGraph()
-        nodes = ["U", "Z", "A", "Y"]
+        nodes = ["U", "X", "A", "Y"]
         G_0.add_nodes_from(nodes)
         G_0.add_edge("U", "A")  # hidden confounder -> treatment
         G_0.add_edge("U", "Y")  # hidden confounder -> outcome
-        G_0.add_edge("Z", "A")  # instrument -> treatment
+        G_0.add_edge("X", "A")  # instrument -> treatment
         G_0.add_edge("A", "Y")  # treatment -> outcome
 
         N = len(nodes)
@@ -267,14 +314,14 @@ class TSCMSampler:
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
                 for i in range(N):
-                    G_k[i, i] = 1.0
+                    G_k[i, i] = 1.0  # autoregressive
             G_lags.append(G_k)
 
         topo = list(nx.topological_sort(G_0))
         return TemporalDAG(G_0, G_lags, self.max_lag, topo)
 
     def _build_rct_no_confounding(self) -> TemporalDAG:
-        """A -> Y. No confounding. Trivially identified: p(Y|do(A)) = p(Y|A)."""
+        """A -> Y (inst). No confounding. Trivially identified: p(Y|do(A)) = p(Y|A)."""
         G_0 = nx.DiGraph()
         nodes = ["A", "Y"]
         G_0.add_nodes_from(nodes)
@@ -286,7 +333,7 @@ class TSCMSampler:
             G_k = np.zeros((N, N), dtype=np.float32)
             if k == 0:
                 for i in range(N):
-                    G_k[i, i] = 1.0
+                    G_k[i, i] = 1.0  # autoregressive
             G_lags.append(G_k)
 
         topo = list(nx.topological_sort(G_0))
