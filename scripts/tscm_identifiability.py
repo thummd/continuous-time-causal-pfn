@@ -18,15 +18,32 @@ import numpy as np
 from dotime.prior.tscm_sampler import TSCMSampler, TSCMStructure
 from dotime.prior.extended_prior import pad_to_max_nodes
 from dotime.eval.metrics import compute_rmse, compute_mae, compute_r2, compute_nmse
-from baselines import ExampleTrainedBaseline, AR1Baseline
+from baselines import (
+    AR1Baseline, 
+    Chronos2Observational,
+    BackDoorTabPFNInterventional,
+    BackDoorTabPFNObservational,
+    BackDoorTabPFNCausalEffect,
+    BackDoorDoTPFNCausalEffect,
+    BackDoorObsPFNCausalEffect,
+    ZeroBaseline
+)
+
+from tqdm import tqdm
 
 # Near-zero targets are ambiguous for sign-based direction accuracy.
 # Targets with |t| < DIR_ACC_EPS are excluded from the metric and reported separately.
 DIR_ACC_EPS = 0.1
 
 BASELINE_STRING_TO_CLASS = {
-    "example": ExampleTrainedBaseline, 
-    "ar1": lambda _: AR1Baseline(),
+    "AR1Baseline": lambda _: AR1Baseline(),
+    "ZeroBaseline": lambda _: ZeroBaseline(),
+    "BackDoorTabPFNInterventional": BackDoorTabPFNInterventional,
+    "BackDoorTabPFNObservational": BackDoorTabPFNObservational,
+    "BackDoorTabPFNCausalEffect": BackDoorTabPFNCausalEffect,
+    "Chronos2Observational": Chronos2Observational,
+    "BackDoorDoTPFNCausalEffect": BackDoorDoTPFNCausalEffect,
+    "BackDoorObsPFNCausalEffect": BackDoorObsPFNCausalEffect
 }
 
 def _direction_accuracy(preds: torch.Tensor, targets: torch.Tensor, eps: float = DIR_ACC_EPS):
@@ -459,6 +476,7 @@ def evaluate_structure(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", type=str, default=None)
+    parser.add_argument("--case-study", type=str, default=None)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--n-samples", type=int, default=50)
     parser.add_argument("--verify-only", action="store_true",
@@ -506,6 +524,10 @@ def main():
     all_results = {}
     for structure in TSCMStructure:
         print(f"\n--- {structure.value} ---")
+
+        if str(structure.value) != args.case_study:
+            continue
+
         results = evaluate_structure(
             model, structure, n_samples=args.n_samples, device=args.device,
             multi_step=args.multi_step, query_offsets=args.query_offsets,
