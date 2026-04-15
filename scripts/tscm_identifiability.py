@@ -68,7 +68,8 @@ def _bootstrap_ci(values, n: int = 1000, alpha: float = 0.05, seed: int = 0):
     return mean, std, lo, hi
 
 
-def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
+def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1,
+                           t_range: tuple = None):
     """Verify that all TSCM structures generate valid data.
 
     Checks: shapes, finite values, hidden variable masking, and
@@ -79,6 +80,7 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
     print("=" * 60)
     print("TSCM Data Generation Verification")
     print("=" * 60)
+    t_rng = np.random.RandomState(42)
 
     all_ok = True
 
@@ -96,11 +98,13 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
         obs_int_diffs = []
 
         for i in range(n_samples):
+            T_sample = t_rng.randint(t_range[0], t_range[1] + 1) if t_range else T
+
             scm = sampler.sample(generator=gen)
             N = len(scm._topo)
 
             # Generate observational data
-            X_obs = scm.sample_observational(T=T, burn_in=30, generator=gen)
+            X_obs = scm.sample_observational(T=T_sample, burn_in=30, generator=gen)
 
             if X_obs.abs().max() > 10:
                 n_divergent += 1
@@ -115,7 +119,7 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
             int_target = valid_targets[0]
 
             # Create intervention: single-step do(A_t) with diverse values
-            int_times = [max(0, T - 5)]
+            int_times = [max(0, T_sample - 5)]
             int_value = float(torch.randn(1, generator=gen).item() * 2.0)
             intervention = InterventionSpec(
                 targets=[int_target],
@@ -125,7 +129,7 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
             )
 
             X_int = scm.sample_interventional(
-                T=T, intervention=intervention, burn_in=30, generator=gen,
+                T=T_sample, intervention=intervention, burn_in=30, generator=gen,
             )
             int_shapes.append(tuple(X_int.shape))
 
@@ -145,7 +149,10 @@ def verify_data_generation(n_samples: int = 10, T: int = 50, max_lag: int = 1):
 
         print(f"  Valid samples: {n_valid}/{n_samples} (divergent: {n_divergent})")
         if obs_shapes:
-            print(f"  X_obs shape: {obs_shapes[0]} (T={T}, N={obs_shapes[0][1]})")
+            if t_range:
+                print(f"  X_obs shapes: T in [{t_range[0]}, {t_range[1]}], N={obs_shapes[0][1]}")
+            else:
+                print(f"  X_obs shape: {obs_shapes[0]} (T={T}, N={obs_shapes[0][1]})")
         if obs_int_diffs:
             mean_diff = np.mean(obs_int_diffs)
             print(f"  Mean |X_int - X_obs|: {mean_diff:.4f}")
@@ -281,6 +288,7 @@ def evaluate_structure(
     structure: TSCMStructure,
     n_samples: int = 50,
     T: int = 50,
+    t_range: tuple = None,
     n_max: int = 41,
     device: str = "cpu",
     multi_step: bool = False,
@@ -306,6 +314,7 @@ def evaluate_structure(
     hidden_vars = sampler.get_hidden_vars()
 
     gen = torch.Generator().manual_seed(42)
+    t_rng = np.random.RandomState(42)
 
     per_tscm = []
     all_confounding = []
@@ -314,10 +323,12 @@ def evaluate_structure(
     all_records = []
 
     for sample_idx in range(n_samples):
+        T_sample = t_rng.randint(t_range[0], t_range[1] + 1) if t_range else T
+
         scm = sampler.sample(generator=gen)
         N = len(scm._topo)
 
-        X_obs = scm.sample_observational(T=T, burn_in=30, generator=gen)
+        X_obs = scm.sample_observational(T=T_sample, burn_in=30, generator=gen)
         if X_obs.abs().max() > 10:
             continue
 
@@ -330,9 +341,9 @@ def evaluate_structure(
         all_confounding.append(conf)
 
         if multi_step:
-            int_times = list(range(max(0, T - 10), T))
+            int_times = list(range(max(0, T_sample - 10), T_sample))
         else:
-            int_times = [max(0, T - 5)]
+            int_times = [max(0, T_sample - 5)]
 
         # Sample intervention value from training distribution N(0, 2)
         # to match CTP's hard intervention sampling and avoid positivity issues
@@ -346,7 +357,7 @@ def evaluate_structure(
         )
 
         X_int = scm.sample_interventional(
-            T=T, intervention=intervention, burn_in=30, generator=gen,
+            T=T_sample, intervention=intervention, burn_in=30, generator=gen,
         )
         if X_int.abs().max() > 10:
             continue
@@ -373,12 +384,12 @@ def evaluate_structure(
                 continue
 
             for offset in query_offsets:
-                query_time_idx = min(int(min(int_times) + offset), T - 1)
+                query_time_idx = min(int(min(int_times) + offset), T_sample - 1)
 
                 rec = _evaluate_single_query(
                     model, X_obs, X_int, X_obs_padded, X_norm, means, stds,
                     variable_mask, int_target, int_times, q_idx, query_time_idx,
-                    T, device, int_value=int_value,
+                    T_sample, device, int_value=int_value,
                 )
                 rec['offset'] = offset
                 rec['q_idx'] = q_idx
@@ -459,10 +470,24 @@ def main():
                              "Default: results/<ckpt_parent>/tscm_eval.json when --checkpoint is given.")
     parser.add_argument("--bootstrap-n", type=int, default=1000,
                         help="Number of bootstrap resamples for CI estimation (default: 1000)")
+    parser.add_argument("--T", type=int, default=None,
+                        help="Fixed trajectory length (default: 50 if --t-range not given)")
+    parser.add_argument("--t-range", type=int, nargs=2, default=None,
+                        metavar=("T_MIN", "T_MAX"),
+                        help="Sample T uniformly from [T_MIN, T_MAX] per sample, "
+                             "matching training. Mutually exclusive with --T.")
     args = parser.parse_args()
 
+    if args.T is not None and args.t_range is not None:
+        parser.error("--T and --t-range are mutually exclusive")
+    if args.t_range is not None and args.t_range[0] > args.t_range[1]:
+        parser.error("--t-range: T_MIN must be <= T_MAX")
+    if args.T is None and args.t_range is None:
+        args.T = 50
+
     if args.verify_only:
-        verify_data_generation(n_samples=args.n_samples, max_lag=args.max_lag)
+        verify_data_generation(n_samples=args.n_samples, max_lag=args.max_lag,
+                               t_range=tuple(args.t_range) if args.t_range else None)
         return
 
     if args.checkpoint is None:
@@ -489,13 +514,21 @@ def main():
 
     print("=" * 80)
     print("TSCM Identifiability Case Studies")
+    if args.t_range:
+        print(f"T: sampled uniformly from [{args.t_range[0]}, {args.t_range[1]}]")
+    else:
+        print(f"T: {args.T} (fixed)")
     print("=" * 80)
 
+    t_range_tuple = tuple(args.t_range) if args.t_range else None
     all_results = {}
     for structure in TSCMStructure:
         print(f"\n--- {structure.value} ---")
         results = evaluate_structure(
-            model, structure, n_samples=args.n_samples, device=args.device,
+            model, structure, n_samples=args.n_samples,
+            T=args.T if args.T is not None else 50,
+            t_range=t_range_tuple,
+            device=args.device,
             multi_step=args.multi_step, query_offsets=args.query_offsets,
             max_lag=args.max_lag,
         )
@@ -641,6 +674,8 @@ def main():
     export = {
         'checkpoint': args.checkpoint,
         'n_samples': args.n_samples,
+        'T': args.T,
+        't_range': args.t_range,
         'max_lag': args.max_lag,
         'multi_step': args.multi_step,
         'query_offsets': args.query_offsets,
