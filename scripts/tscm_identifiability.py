@@ -353,7 +353,7 @@ def evaluate_structure(
     from causal_time_prior.interventions import InterventionSpec, InterventionType
 
     if query_offsets is None:
-        query_offsets = [3]
+        query_offsets = [0]
 
     sampler = TSCMSampler(structure, max_lag=max_lag)
     hidden_vars = sampler.get_hidden_vars()
