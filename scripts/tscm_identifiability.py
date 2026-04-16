@@ -19,13 +19,16 @@ from dotime.prior.tscm_sampler import TSCMSampler, TSCMStructure
 from dotime.prior.extended_prior import pad_to_max_nodes
 from dotime.eval.metrics import compute_rmse, compute_mae, compute_r2, compute_nmse
 from baselines import (
-    AR1Baseline, 
+    AR1Baseline,
     Chronos2Observational,
     BackDoorTabPFNInterventional,
     BackDoorTabPFNObservational,
     BackDoorTabPFNCausalEffect,
     BackDoorDoTPFNCausalEffect,
     BackDoorObsPFNCausalEffect,
+    FrontDoorTabPFNInterventional,
+    FrontDoorTabPFNObservational,
+    FrontDoorTabPFNCausalEffect,
     ZeroBaseline
 )
 
@@ -43,7 +46,10 @@ BASELINE_STRING_TO_CLASS = {
     "BackDoorTabPFNCausalEffect": BackDoorTabPFNCausalEffect,
     "Chronos2Observational": Chronos2Observational,
     "BackDoorDoTPFNCausalEffect": BackDoorDoTPFNCausalEffect,
-    "BackDoorObsPFNCausalEffect": BackDoorObsPFNCausalEffect
+    "BackDoorObsPFNCausalEffect": BackDoorObsPFNCausalEffect,
+    "FrontDoorTabPFNInterventional": FrontDoorTabPFNInterventional,
+    "FrontDoorTabPFNObservational": FrontDoorTabPFNObservational,
+    "FrontDoorTabPFNCausalEffect": FrontDoorTabPFNCausalEffect,
 }
 
 def _direction_accuracy(preds: torch.Tensor, targets: torch.Tensor, eps: float = DIR_ACC_EPS):

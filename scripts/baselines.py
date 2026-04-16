@@ -3,7 +3,6 @@ from typing import Dict, List
 import torch
 from dotime.model.do_over_time_pfn import DoOverTimePFN
 from pfns.model.bar_distribution import FullSupportBarDistribution
-from chronos import BaseChronosPipeline
 import pandas as pd
 import numpy as np
 from tabpfn import TabPFNRegressor
@@ -87,6 +86,7 @@ class BackDoorDoTPFNCausalEffect(TrainedBaseline):
 class Chronos2Observational(SinglePointTimeSeriesBaseline):
 
     def __init__(self, device: str = "cpu"):
+        from chronos import BaseChronosPipeline
         self.device = device
         self.pipeline = BaseChronosPipeline.from_pretrained("amazon/chronos-2", device_map=device)
 
@@ -239,5 +239,162 @@ class BackDoorTabPFNCausalEffect(_BackDoorTabPFNBase):
         pred_int = self._mc_predict(model_y, int_value_norm, x_t_samples, y_prev)
         pred_obs = self._mc_predict(model_y, a_obs, x_t_samples, y_prev)
         return pred_int - pred_obs, None
-    
+
+
+class _FrontDoorTabPFNBase(SinglePointTimeSeriesBaseline):
+    """Shared front-door adjustment logic using three TabPFN regressors.
+
+    Fits in-context from the observational trajectory:
+      - model_m: P(M_t | A_t, M_{t-1})
+      - model_y: P(Y_t | M_t, A_t, Y_{t-1})
+      - model_a: P(A_t | A_{t-1})   (marginal for integrating out A' in inner sum)
+
+    Front-door adjustment formula:
+      E[Y_t | do(A_t=a), D_{<t}]
+        = sum_m P(M_t=m | A_t=a, m_{t-1})
+          * sum_{a'} E[Y_t | M_t=m, A_t=a', y_{t-1}] * P(A_t=a' | a_{t-1})
+
+    The outer integral over m de-confounds A->M (unconfounded by structure).
+    The inner integral over a' de-confounds M->Y by blocking M<-A<-U->Y.
+
+    Assumes exactly one mediator M (the observed variable that is neither A nor Y).
+    offset=0 only.
+    """
+
+    def _setup(self, batch: Dict[str, torch.Tensor]):
+        """Fit all three TabPFN models and return
+        (model_m, model_y, model_a, m_prev, y_prev, a_obs, int_value_norm, q_levels).
+        """
+        X_obs_norm = batch['X_obs_norm'][0]        # (T, n_max)
+        variable_mask = batch['variable_mask'][0]   # (n_max,)
+        a_idx = int(batch['intervention_target'].item())
+        y_idx = int(batch['query_target'].item())
+        int_value_norm = float(batch['intervention_value'].item())
+
+        T = X_obs_norm.shape[0]
+        t = int(round(batch['intervention_time_start'].item() * T))
+        t_prev = t - 1
+
+        # Identify M: the single observed variable that is neither A nor Y
+        observed = [i for i in range(variable_mask.shape[0]) if variable_mask[i] > 0.5]
+        m_vars = [i for i in observed if i != a_idx and i != y_idx]
+        if len(m_vars) != 1:
+            raise ValueError(
+                f"FrontDoor adjustment requires exactly one mediator M, found {len(m_vars)}: {m_vars}"
+            )
+        if t_prev < 1:
+            raise ValueError(
+                f"FrontDoor adjustment requires at least one lag (t_prev >= 1), got t_prev={t_prev}"
+            )
+
+        m_idx = m_vars[0]
+        a_series = X_obs_norm[:t, a_idx].cpu().numpy()
+        m_series = X_obs_norm[:t, m_idx].cpu().numpy()
+        y_series = X_obs_norm[:t, y_idx].cpu().numpy()
+
+        # model_m: P(M_t | A_t, M_{t-1})
+        model_m = TabPFNRegressor()
+        model_m.fit(
+            np.column_stack([a_series[1:], m_series[:-1]]),
+            m_series[1:],
+        )
+
+        # model_y: P(Y_t | M_t, A_t, Y_{t-1})
+        model_y = TabPFNRegressor()
+        model_y.fit(
+            np.column_stack([m_series[1:], a_series[1:], y_series[:-1]]),
+            y_series[1:],
+        )
+
+        # model_a: P(A_t | A_{t-1})  — natural marginal for inner sum over a'
+        model_a = TabPFNRegressor()
+        model_a.fit(a_series[:-1].reshape(-1, 1), a_series[1:])
+
+        q_levels = np.linspace(1 / (self.n_mc + 1), 1 - 1 / (self.n_mc + 1), self.n_mc).tolist()
+        m_prev = float(m_series[-1])
+        y_prev = float(y_series[-1])
+        a_obs = float(a_series[-1])
+        return model_m, model_y, model_a, m_prev, y_prev, a_obs, int_value_norm, q_levels
+
+    def _mc_predict(
+        self,
+        model_m,
+        model_y,
+        model_a,
+        a_val: float,
+        m_prev: float,
+        y_prev: float,
+        a_obs: float,
+        q_levels,
+    ) -> float:
+        """Double MC integral implementing the front-door formula.
+
+        Outer loop: sample m from P(M_t | A_t=a_val, m_prev).
+        Inner loop: sample a' from P(A_t | a_obs) and average E[Y | m, a', y_prev].
+        Result is the mean over all n_mc^2 (m, a') combinations.
+        """
+        # Sample m_t quantiles from P(M_t | A_t=a_val, M_{t-1}=m_prev)
+        m_samples = np.array([
+            float(q[0]) for q in model_m.predict(
+                np.array([[a_val, m_prev]]),
+                output_type="quantiles",
+                quantiles=q_levels,
+            )
+        ])
+
+        # Sample a' quantiles from P(A_t | A_{t-1}=a_obs)
+        a_samples = np.array([
+            float(q[0]) for q in model_a.predict(
+                np.array([[a_obs]]),
+                output_type="quantiles",
+                quantiles=q_levels,
+            )
+        ])
+
+        # Evaluate model_y on the full (m, a') Cartesian product — shape (n_mc^2, 3)
+        m_grid, a_grid = np.meshgrid(m_samples, a_samples)
+        X_q = np.column_stack([
+            m_grid.ravel(),
+            a_grid.ravel(),
+            np.full(self.n_mc ** 2, y_prev),
+        ])
+        return float(np.mean(model_y.predict(X_q, output_type="mean")))
+
+
+class FrontDoorTabPFNInterventional(_FrontDoorTabPFNBase):
+    """Predicts E[Y_t | do(A_t = a), D_{<t}] via front-door adjustment."""
+
+    def __init__(self, device: str = "cpu", n_mc: int = 100):
+        self.n_mc = n_mc
+        self.device = device
+
+    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        model_m, model_y, model_a, m_prev, y_prev, a_obs, int_value_norm, q_levels = self._setup(batch)
+        return self._mc_predict(model_m, model_y, model_a, int_value_norm, m_prev, y_prev, a_obs, q_levels), None
+
+
+class FrontDoorTabPFNObservational(_FrontDoorTabPFNBase):
+    """Predicts E[Y_t | A_t = a_obs, D_{<t}] via front-door adjustment (no intervention)."""
+
+    def __init__(self, device: str = "cpu", n_mc: int = 100):
+        self.n_mc = n_mc
+        self.device = device
+
+    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        model_m, model_y, model_a, m_prev, y_prev, a_obs, _, q_levels = self._setup(batch)
+        return self._mc_predict(model_m, model_y, model_a, a_obs, m_prev, y_prev, a_obs, q_levels), None
+
+
+class FrontDoorTabPFNCausalEffect(_FrontDoorTabPFNBase):
+    """Predicts the causal effect E[Y_t | do(A_t = a), D_{<t}] - E[Y_t | A_t = a_obs, D_{<t}]."""
+
+    def __init__(self, device: str = "cpu", n_mc: int = 100):
+        self.n_mc = n_mc
+        self.device = device
+
+    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        model_m, model_y, model_a, m_prev, y_prev, a_obs, int_value_norm, q_levels = self._setup(batch)
+        pred_int = self._mc_predict(model_m, model_y, model_a, int_value_norm, m_prev, y_prev, a_obs, q_levels)
+        pred_obs = self._mc_predict(model_m, model_y, model_a, a_obs,          m_prev, y_prev, a_obs, q_levels)
+        return pred_int - pred_obs, None
 
