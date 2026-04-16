@@ -14,6 +14,7 @@ from typing import Dict, Optional
 from causal_time_prior.prior import CausalTimePrior
 from causal_time_prior.interventions import InterventionType, InterventionSpec
 from dotime.prior.tscm_sampler import TSCMSampler, TSCMStructure
+from dotime.prior.batched_tscm import BatchedTSCMSimulator
 
 
 # Map intervention types to integers
@@ -100,24 +101,37 @@ class ExtendedCausalTimePrior:
         use_lagged_edges: bool = True,
         intervention_scale: float = 2.0,
         causal_mask_mode: str = "full",
+        dynamics_burn_in: int = 0,
     ):
         self.n_max = n_max
         self.t_range = t_range
         self.downstream_prob = downstream_prob
         self.intervention_source = intervention_source
         self.causal_mask_mode = causal_mask_mode
+        self.dynamics_burn_in = dynamics_burn_in
+
+        self.tscm_structure = tscm_structure
+        self.intervention_scale = intervention_scale
+        self._seed = seed
+        self._burn_in_total = burn_in + dynamics_burn_in
 
         if tscm_structure is not None:
             structure_enum = TSCMStructure(tscm_structure)
             self.prior = TSCMPrior(
-                structure_enum, burn_in=burn_in, seed=seed,
+                structure_enum, burn_in=burn_in + dynamics_burn_in, seed=seed,
                 use_lagged_edges=use_lagged_edges,
                 intervention_scale=intervention_scale,
+            )
+            # Batched simulator for vectorized generation
+            self.batched_sim = BatchedTSCMSimulator(
+                structure_enum, max_lag=1,
+                use_lagged_edges=use_lagged_edges,
+                sigma_w=0.5, noise_std=0.3,
             )
         else:
             config = {
                 'N_max': n_max_prior,
-                'burn_in': burn_in,
+                'burn_in': burn_in + dynamics_burn_in,
             }
             self.prior = CausalTimePrior(
                 config=config,
@@ -377,6 +391,10 @@ class ExtendedCausalTimePrior:
         if T is None:
             T = self.sample_T()
 
+        # Use batched vectorized simulation for TSCM structures (much faster)
+        if self.tscm_structure is not None and hasattr(self, 'batched_sim'):
+            return self._generate_batch_vectorized(batch_size, T, n_queries, query_mode)
+
         if num_workers > 0:
             samples = self._generate_parallel(batch_size, T, n_queries, num_workers, query_mode)
         else:
@@ -385,13 +403,116 @@ class ExtendedCausalTimePrior:
 
         return self._collate_batch(samples)
 
+    def _generate_batch_vectorized(self, batch_size, T, n_queries, query_mode):
+        """Generate a batch using the batched vectorized SCM simulator.
+
+        Much faster than per-sample generation for fixed TSCM structures.
+        Produces the same output format as _collate_batch().
+        """
+        sim = self.batched_sim
+        seed = int(self.rng.randint(0, 2**31))
+
+        pairs = sim.generate_pairs(
+            B=batch_size, T=T, burn_in=self._burn_in_total,
+            device='cpu', intervention_scale=self.intervention_scale, seed=seed,
+        )
+
+        X_obs_all = pairs['X_obs']      # (B, T, N_raw)
+        X_int_all = pairs['X_int']      # (B, T, N_raw)
+        valid = pairs['valid']           # (B,)
+        int_target = int(pairs['int_target'][0].item())
+        int_time_idx = int(pairs['int_time'][0].item())
+        int_value = float(pairs['int_value'][0].item())
+        N = pairs['N']
+        hidden_vars = pairs['hidden_vars']
+
+        # Build per-sample dicts and use the existing _collate_batch
+        samples = []
+        for b in range(batch_size):
+            if not valid[b]:
+                # Skip diverged — generate a fallback via sequential path
+                s = self.generate_sample(T=T, n_queries=n_queries, query_mode=query_mode)
+                samples.append(s)
+                continue
+
+            X_obs = X_obs_all[b]  # (T, N_raw)
+            X_int = X_int_all[b]
+
+            # Causal masking
+            X_obs_masked = X_obs.clone()
+            X_obs_masked[int_time_idx:] = 0.0
+            if self.causal_mask_mode == "interpolation":
+                X_obs_masked[int_time_idx, int_target] = X_obs[int_time_idx, int_target]
+
+            # Pad to n_max
+            X_obs_padded = pad_to_max_nodes(X_obs_masked, self.n_max)
+            X_int_padded = pad_to_max_nodes(X_int, self.n_max)
+
+            variable_mask = torch.zeros(self.n_max)
+            for j in range(N):
+                if j not in hidden_vars:
+                    variable_mask[j] = 1.0
+
+            # Query: all non-hidden, non-intervention variables at int_time
+            other_vars = [v for v in range(N) if v != int_target and v not in hidden_vars]
+            if query_mode == "all_pairs" and other_vars:
+                query_targets = other_vars
+            else:
+                query_targets = [self.rng.choice(other_vars)] if other_vars else [int_target]
+                query_targets = query_targets * max(1, n_queries)
+
+            query_time_idxs = [int_time_idx] * len(query_targets)
+
+            # Ground truth
+            y_trues = [float(X_int_padded[int_time_idx, qt].item()) for qt in query_targets]
+            y_obs_vals = [float(X_obs_padded[int_time_idx, qt].item()) for qt in query_targets]
+            y_effects = [yi - yo for yi, yo in zip(y_trues, y_obs_vals)]
+
+            actual_nq = len(query_targets)
+            if actual_nq == 1:
+                qt_t = torch.tensor(query_targets[0], dtype=torch.long)
+                qtime_t = torch.tensor(query_time_idxs[0] / T, dtype=torch.float32)
+                yt_t = torch.tensor(y_trues[0], dtype=torch.float32)
+                ye_t = torch.tensor(y_effects[0], dtype=torch.float32)
+            else:
+                qt_t = torch.tensor(query_targets, dtype=torch.long)
+                qtime_t = torch.tensor([q / T for q in query_time_idxs], dtype=torch.float32)
+                yt_t = torch.tensor(y_trues, dtype=torch.float32)
+                ye_t = torch.tensor(y_effects, dtype=torch.float32)
+
+            samples.append({
+                'X_obs': X_obs_padded,
+                'X_int': X_int_padded,
+                'variable_mask': variable_mask,
+                'intervention_target': torch.tensor(int_target, dtype=torch.long),
+                'intervention_type': torch.tensor(0, dtype=torch.long),  # HARD
+                'intervention_value': torch.tensor(int_value, dtype=torch.float32),
+                'intervention_time_start': torch.tensor(int_time_idx / T, dtype=torch.float32),
+                'intervention_time_end': torch.tensor(int_time_idx / T, dtype=torch.float32),
+                'query_target': qt_t,
+                'query_time': qtime_t,
+                'Y_true': yt_t,
+                'Y_causal_effect': ye_t,
+                'num_vars': torch.tensor(N, dtype=torch.long),
+                'int_onset_idx': torch.tensor(int_time_idx, dtype=torch.long),
+                'positivity_score': torch.tensor(0.0, dtype=torch.float32),
+            })
+
+        return self._collate_batch(samples)
+
     def _generate_parallel(self, batch_size, T, n_queries, num_workers, query_mode):
-        """Generate samples in parallel using multiprocessing (fork)."""
+        """Generate samples in parallel using concurrent.futures."""
+        from concurrent.futures import ProcessPoolExecutor
         import multiprocessing as mp
+
+        n_procs = min(num_workers, batch_size)
+        # Give each worker a unique seed offset to avoid correlated samples
+        base_seed = int(self.rng.randint(0, 2**31))
+        args = [(self, T, n_queries, query_mode, base_seed + i)
+                for i in range(batch_size)]
         ctx = mp.get_context("fork")
-        args = [(self, T, n_queries, query_mode)] * batch_size
-        with ctx.Pool(processes=min(num_workers, batch_size)) as pool:
-            samples = pool.map(_generate_sample_worker, args)
+        with ProcessPoolExecutor(max_workers=n_procs, mp_context=ctx) as executor:
+            samples = list(executor.map(_generate_sample_worker, args))
         return samples
 
     @staticmethod
@@ -451,6 +572,13 @@ class ExtendedCausalTimePrior:
 
 
 def _generate_sample_worker(args):
-    """Top-level function for multiprocessing Pool.map (must be picklable)."""
-    prior, T, n_queries, query_mode = args
+    """Top-level function for multiprocessing (must be picklable).
+
+    Each worker reseeds its RNG to avoid correlated samples across processes.
+    """
+    prior, T, n_queries, query_mode, worker_seed = args
+    # Reseed per-worker to avoid sharing RNG state across forked processes
+    prior.rng = np.random.RandomState(worker_seed)
+    if hasattr(prior.prior, 'gen'):
+        prior.prior.gen = torch.Generator().manual_seed(worker_seed)
     return prior.generate_sample(T=T, n_queries=n_queries, query_mode=query_mode)
