@@ -209,6 +209,9 @@ class ExtendedCausalTimePrior:
         #
         # Modes:
         #   "prior"             — keep the CTP-sampled value (no re-simulation).
+        #   "positivity_aware"  — clip prior value to [obs_mean - 3σ, obs_mean + 3σ]
+        #                         and re-simulate. Preserves prior shape, enforces
+        #                         positivity (intervention within observed support).
         #   "observed_discrete" — pick a random past value (measure-zero for
         #                         continuous variables, kept for backward compat).
         #   "observed_normal"   — sample from N(mean(pre_int), std(pre_int)).
@@ -219,7 +222,30 @@ class ExtendedCausalTimePrior:
         if mode == "observed":
             mode = "observed_discrete"
 
-        if mode in ("observed_discrete", "observed_normal", "observed_uniform"):
+        if mode == "positivity_aware":
+            pre_int = X_obs[:int_onset, intervention_target]
+            if pre_int.numel() > 1 and float(pre_int.std().item()) > 1e-4:
+                mu = float(pre_int.mean().item())
+                sigma = float(pre_int.std().item())
+                clipped = float(np.clip(intervention_value, mu - 3 * sigma, mu + 3 * sigma))
+                if clipped != intervention_value:
+                    new_intervention = InterventionSpec(
+                        targets=intervention.targets,
+                        times=intervention.times,
+                        intervention_type=InterventionType.HARD,
+                        values=clipped,
+                    )
+                    X_int_new = scm.sample_interventional(
+                        T=T, intervention=new_intervention,
+                        burn_in=self.prior.config.get('burn_in', 50),
+                    )
+                    if (not torch.isnan(X_int_new).any() and X_int_new.abs().max() < 10):
+                        X_int = X_int_new
+                        X_int_padded = pad_to_max_nodes(X_int, self.n_max)
+                        intervention = new_intervention
+                        intervention_value = clipped
+
+        elif mode in ("observed_discrete", "observed_normal", "observed_uniform"):
             pre_int = X_obs[:int_onset, intervention_target]
             if pre_int.numel() > 0 and float(pre_int.std().item()) > 1e-4:
                 pre_np = pre_int.detach().cpu().numpy()
@@ -254,6 +280,15 @@ class ExtendedCausalTimePrior:
                     intervention_value = obs_value
 
         intervention_type = INTERVENTION_TYPE_MAP[intervention.intervention_type]
+
+        # Positivity score: how OOD is intervention_value relative to observed support?
+        pre_int = X_obs[:int_onset, intervention_target]
+        if pre_int.numel() > 1 and float(pre_int.std().item()) > 1e-4:
+            obs_mu = float(pre_int.mean().item())
+            obs_sigma = float(pre_int.std().item())
+            positivity_score = max(0.0, abs(intervention_value - obs_mu) / obs_sigma - 3.0)
+        else:
+            positivity_score = 0.0
 
         # Query sampling — aligned with identifiability theory:
         # P(Y_t | do(A_t), H_{t-1},...,H_{t-K})
@@ -303,11 +338,13 @@ class ExtendedCausalTimePrior:
             'X_obs': X_obs_padded,                                    # (T, N_max)
             'X_int': X_int_padded,                                    # (T, N_max)
             'variable_mask': variable_mask,                           # (N_max,)
+            'int_onset_idx': torch.tensor(int_onset, dtype=torch.long),
             'intervention_target': torch.tensor(intervention_target, dtype=torch.long),
             'intervention_type': torch.tensor(intervention_type, dtype=torch.long),
             'intervention_value': torch.tensor(intervention_value, dtype=torch.float32),
             'intervention_time_start': torch.tensor(time_start / T, dtype=torch.float32),
             'intervention_time_end': torch.tensor(time_end / T, dtype=torch.float32),
+            'positivity_score': torch.tensor(positivity_score, dtype=torch.float32),
             'query_target': query_target_t,
             'query_time': query_time_t,
             'Y_true': y_true_t,

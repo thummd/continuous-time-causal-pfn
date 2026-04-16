@@ -73,6 +73,7 @@ def train(
     n_buckets: int = 1000,
     encoder_backend: str = "transformer",
     encoder_config: Optional[dict] = None,
+    context_window: int = 200,
     # Prior config
     n_max_prior: int = 10,
     t_range: tuple = (50, 200),
@@ -150,6 +151,7 @@ def train(
         head_type=head_type,
         tau_levels=tau_levels,
         n_mixer_layers=n_mixer_layers,
+        context_window=context_window,
     )
     if head_type == "bar":
         model.bar_head.set_bar_distribution(bar_dist, borders.to(device))
@@ -309,6 +311,7 @@ def train(
                         'head_type': head_type,
                         'tau_levels': tau_levels,
                         'n_mixer_layers': n_mixer_layers,
+                        'context_window': context_window,
                     },
                 }, save_path)
 

@@ -23,10 +23,16 @@ def per_variable_normalize(
     means : (B, N_max) per-variable means
     stds : (B, N_max) per-variable stds
     """
-    # Compute per-variable mean and std over time dimension
+    # Compute per-variable mean and std over pre-intervention timesteps only.
+    # X_obs is zero-masked after int_onset, so we exclude zeros to avoid
+    # diluting statistics with the post-intervention mask.
     # X_obs: (B, T, N_max)
-    means = X_obs.mean(dim=1)           # (B, N_max)
-    stds = X_obs.std(dim=1) + eps       # (B, N_max)
+    nonzero_mask = (X_obs != 0).float()  # (B, T, N_max)
+    n_valid = nonzero_mask.sum(dim=1).clamp(min=1)  # (B, N_max)
+    means = (X_obs * nonzero_mask).sum(dim=1) / n_valid  # (B, N_max)
+    sq_diff = ((X_obs - means.unsqueeze(1)) * nonzero_mask) ** 2
+    # Bessel's correction: divide by (n-1) to match torch.std default
+    stds = (sq_diff.sum(dim=1) / (n_valid - 1).clamp(min=1)).sqrt() + eps  # (B, N_max)
 
     # Zero out stats for padded variables
     mask = variable_mask                 # (B, N_max)

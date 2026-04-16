@@ -5,6 +5,7 @@ model:
   n_encoder_layers: 6  # reduced from 10 to fit shared A100
   n_cross_attn_heads: 4
   n_buckets: 1000
+  context_window: 200  # max pre-intervention steps for relative positional encoding
   encoder:             # GatedDeltaProduct config (from TempoPFN)
     expand_v: 1.0
     use_short_conv: true
@@ -17,7 +18,7 @@ model:
 prior:
   n_min: 3
   n_max: 10
-  t_range: [50, 100]   # capped at 100 to bound peak GPU memory
+  t_range: [50, 2000]  # relative encoding + truncation bounds actual encoder input
   burn_in: 50
   downstream_prob: 0.7
 

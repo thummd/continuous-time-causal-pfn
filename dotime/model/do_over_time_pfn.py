@@ -40,6 +40,7 @@ class DoOverTimePFN(nn.Module):
         head_type: str = "bar",
         tau_levels: Optional[List[float]] = None,
         n_mixer_layers: int = 1,
+        context_window: int = 200,
     ):
         super().__init__()
         self.head_type = head_type
@@ -51,6 +52,7 @@ class DoOverTimePFN(nn.Module):
             n_layers=n_encoder_layers,
             backend=encoder_backend,
             encoder_config=encoder_config,
+            context_window=context_window,
         )
 
         self.cross_variable_mixer = CrossVariableMixer(
@@ -92,6 +94,7 @@ class DoOverTimePFN(nn.Module):
         return self.temporal_encoder(
             batch['X_obs_norm'],
             batch['variable_mask'],
+            int_onset_idx=batch.get('int_onset_idx'),
         )
 
     def query(self, h_vars: torch.Tensor, batch: Dict[str, torch.Tensor]) -> torch.Tensor:

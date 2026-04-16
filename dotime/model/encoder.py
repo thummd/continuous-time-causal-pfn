@@ -31,19 +31,28 @@ class TemporalEncoder(nn.Module):
         n_layers: int = 10,
         backend: str = "transformer",
         encoder_config: Optional[dict] = None,
+        context_window: int = 200,
     ):
         super().__init__()
         self.n_max = n_max
         self.embed_size = embed_size
         self.n_layers = n_layers
         self.backend = backend
+        self.context_window = context_window
 
         # Per-scalar value embedding (from TempoPFN pattern)
         self.expand_values = nn.Linear(1, embed_size, bias=True)
 
-        # Learnable positional encoding
+        # Learnable absolute positional encoding (backward compat fallback)
         self.pos_encoding = nn.Parameter(
             torch.randn(1, 1024, embed_size) * 0.02  # max T=1024
+        )
+
+        # Learnable relative positional encoding (distance to intervention)
+        # Indexed by rel_pos + context_window to shift to non-negative.
+        # Covers positions from -context_window to +context_window.
+        self.rel_pos_encoding = nn.Parameter(
+            torch.randn(1, 2 * context_window + 1, embed_size) * 0.02
         )
 
         if backend == "gdp":
@@ -106,6 +115,7 @@ class TemporalEncoder(nn.Module):
         self,
         X_obs: torch.Tensor,
         variable_mask: torch.Tensor,
+        int_onset_idx: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Encode observational time series per-variable.
 
@@ -113,6 +123,10 @@ class TemporalEncoder(nn.Module):
         ----------
         X_obs : (B, T, N_max) normalized observational series
         variable_mask : (B, N_max) binary mask for real variables
+        int_onset_idx : (B,) integer index of intervention onset per sample.
+            If provided, uses relative positional encoding (distance to
+            intervention) and truncates to context_window. If None, falls
+            back to absolute positional encoding.
 
         Returns
         -------
@@ -120,8 +134,16 @@ class TemporalEncoder(nn.Module):
         """
         B, T, N = X_obs.shape
 
+        if int_onset_idx is not None:
+            return self._forward_relative(X_obs, variable_mask, int_onset_idx)
+        else:
+            return self._forward_absolute(X_obs, variable_mask)
+
+    def _forward_absolute(self, X_obs, variable_mask):
+        """Original forward with absolute positional encoding (backward compat)."""
+        B, T, N = X_obs.shape
+
         # Time mask: which timesteps have data (pre-intervention, non-zero)
-        # (B, T) — True for timesteps with any non-zero variable
         time_mask = (X_obs.abs().sum(dim=-1) > 0)  # (B, T)
 
         # Embed per-variable: (B, T, N) -> (B, T, N, 1) -> (B, T, N, E)
@@ -141,17 +163,63 @@ class TemporalEncoder(nn.Module):
             x = self._forward_transformer(x)
 
         # Mask-aware pool: average only over non-zero (pre-intervention) timesteps
-        # Expand time_mask from (B, T) to (B*N, T, 1) for broadcasting
         tm = time_mask.unsqueeze(1).expand(B, N, T)  # (B, N, T)
         tm = tm.reshape(B * N, T).unsqueeze(-1)      # (B*N, T, 1)
         h = (x * tm).sum(dim=1) / tm.sum(dim=1).clamp(min=1)  # (B*N, E)
 
         # Reshape: (B*N, E) -> (B, N, E)
         h = h.view(B, N, self.embed_size)
-
-        # Mask out padded variables
         h = h * variable_mask.unsqueeze(-1)
+        return h
 
+    def _forward_relative(self, X_obs, variable_mask, int_onset_idx):
+        """Forward with relative positional encoding and context window truncation."""
+        B, T, N = X_obs.shape
+        cw = self.context_window
+
+        # Truncate to context window: [int_onset - cw, int_onset) per sample
+        # Build truncated tensor of shape (B, cw, N)
+        X_trunc = torch.zeros(B, cw, N, device=X_obs.device, dtype=X_obs.dtype)
+        rel_positions = torch.zeros(B, cw, device=X_obs.device, dtype=torch.long)
+        time_mask = torch.zeros(B, cw, device=X_obs.device, dtype=torch.bool)
+
+        for b in range(B):
+            onset = int(int_onset_idx[b].item())
+            start = max(0, onset - cw)
+            length = onset - start  # actual number of pre-intervention steps
+            if length > 0:
+                X_trunc[b, cw - length:cw, :] = X_obs[b, start:onset, :]
+                # Relative positions: distance to intervention (negative = before)
+                # e.g., if onset=45, start=0, length=45: positions are -45, -44, ..., -1
+                rel_pos = torch.arange(start - onset, 0, device=X_obs.device)  # (length,)
+                rel_positions[b, cw - length:cw] = rel_pos + cw  # shift to non-negative index
+                time_mask[b, cw - length:cw] = True
+
+        # Embed values: (B, cw, N, 1) -> (B, cw, N, E)
+        x = self.expand_values(X_trunc.unsqueeze(-1))
+
+        # Add relative positional encoding (shared across variables)
+        # rel_positions: (B, cw) -> index into rel_pos_encoding (1, 2*cw+1, E)
+        rel_pos_embed = self.rel_pos_encoding[0, rel_positions, :]  # (B, cw, E)
+        x = x + rel_pos_embed.unsqueeze(2)  # broadcast over N
+
+        # Vectorize: (B, cw, N, E) -> (B*N, cw, E)
+        x = x.permute(0, 2, 1, 3).contiguous()  # (B, N, cw, E)
+        x = x.view(B * N, cw, self.embed_size)
+
+        # Encode
+        if self.backend == "gdp":
+            x = self._forward_gdp(x, B, N)
+        else:
+            x = self._forward_transformer(x)
+
+        # Mask-aware pool
+        tm = time_mask.unsqueeze(1).expand(B, N, cw)  # (B, N, cw)
+        tm = tm.reshape(B * N, cw).unsqueeze(-1)      # (B*N, cw, 1)
+        h = (x * tm).sum(dim=1) / tm.sum(dim=1).clamp(min=1)  # (B*N, E)
+
+        h = h.view(B, N, self.embed_size)
+        h = h * variable_mask.unsqueeze(-1)
         return h
 
     def _forward_gdp(self, x: torch.Tensor, B: int, N: int) -> torch.Tensor:

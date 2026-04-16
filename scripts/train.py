@@ -45,10 +45,11 @@ def main():
                         help="Number of stacked cross-attention layers in mixer (1=default, 3=deep)")
     parser.add_argument(
         "--intervention-source", type=str, default="prior",
-        choices=["prior", "observed_discrete", "observed_normal", "observed_uniform", "observed"],
+        choices=["prior", "positivity_aware", "observed_discrete", "observed_normal", "observed_uniform", "observed"],
         help=(
             "Intervention value source for re-simulation. "
             "'prior': keep N(0,2) from CTP (no re-simulation). "
+            "'positivity_aware': clip prior to [mean-3σ, mean+3σ] of observed support. "
             "'observed_discrete': sample a random past value (legacy 'observed'). "
             "'observed_normal': sample N(mean(pre_int), std(pre_int)). "
             "'observed_uniform': sample U[min(pre_int), max(pre_int)]."
@@ -90,6 +91,7 @@ def main():
         n_buckets=args.n_buckets or model_cfg["n_buckets"],
         encoder_backend=args.backend or "transformer",
         encoder_config=model_cfg.get("encoder"),
+        context_window=model_cfg.get("context_window", 200),
         n_max_prior=prior_cfg["n_max"],
         t_range=tuple(prior_cfg["t_range"]),
         burn_in=prior_cfg["burn_in"],

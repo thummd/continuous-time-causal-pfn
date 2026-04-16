@@ -299,6 +299,12 @@ def _aggregate_results(records, all_confounding):
 
     dir_acc = _direction_accuracy(preds, targets)
 
+    # Positivity metrics
+    pos_scores = [r['positivity_score'] for r in records
+                  if 'positivity_score' in r and not np.isnan(r.get('positivity_score', float('nan')))]
+    mean_positivity = float(np.mean(pos_scores)) if pos_scores else float('nan')
+    frac_ood = float(np.mean([s > 0 for s in pos_scores])) if pos_scores else float('nan')
+
     return {
         'total': len(records),
         'rmse': compute_rmse(preds, targets),
@@ -312,6 +318,8 @@ def _aggregate_results(records, all_confounding):
         'effect_mae': torch.mean(torch.abs(pred_effects - effects)).item(),
         'mean_effect_magnitude': effects.abs().mean().item(),
         'mean_confounding': mean_confounding,
+        'mean_positivity_score': mean_positivity,
+        'frac_ood': frac_ood,
     }
 
 def evaluate_structure(
@@ -375,8 +383,18 @@ def evaluate_structure(
             int_times = [max(0, T_sample - 5)]
 
         # Sample intervention value from training distribution N(0, 2)
-        # to match CTP's hard intervention sampling and avoid positivity issues
+        # to match CTP's hard intervention sampling
         int_value = float(torch.randn(1, generator=gen).item() * 2.0)
+
+        # Positivity score: how OOD is the intervention relative to observed support?
+        int_onset = min(int_times)
+        pre_int_vals = X_obs[:int_onset, int_target]
+        if pre_int_vals.numel() > 1:
+            obs_mu = pre_int_vals.mean().item()
+            obs_sigma = max(pre_int_vals.std().item(), 1e-4)
+            positivity_score = max(0.0, abs(int_value - obs_mu) / obs_sigma - 3.0)
+        else:
+            positivity_score = float('nan')
 
         intervention = InterventionSpec(
             targets=[int_target],
@@ -418,6 +436,7 @@ def evaluate_structure(
             )
             rec['offset'] = offset
             rec['q_idx'] = q_idx
+            rec['positivity_score'] = positivity_score
 
             per_offset_records[offset].append(rec)
             all_records.append(rec)
@@ -596,6 +615,8 @@ def main():
         print(f"  Causal effect RMSE: {_fmt('effect_rmse')} | MAE: {_fmt('effect_mae')}")
         print(f"  Mean |causal effect|: {results['mean_effect_magnitude']:.4f}")
         print(f"  Mean confounding (corr): {results['mean_confounding']:.4f}")
+        print(f"  Positivity: mean_score={results.get('mean_positivity_score', float('nan')):.4f} "
+              f"frac_ood={results.get('frac_ood', float('nan')):.1%}")
 
         # Per-TSCM summary
         if per_tscm:
@@ -620,14 +641,15 @@ def main():
                       f"Dir={r_off['direction_accuracy']:.1%}")
 
     # Summary table
-    header_w = 155
+    header_w = 175
     print("\n" + "=" * header_w)
     print(f"{'Structure':<25} {'N':>4} {'Nt':>4} "
           f"{'RMSE':>8} {'±std':>7} "
           f"{'nMSE':>8} {'med':>8} "
           f"{'Dir':>7} {'±std':>7} "
           f"{'Nv':>4} {'Nx':>4} "
-          f"{'Eff.RMSE':>9} {'|Effect|':>9} {'Confound':>8}")
+          f"{'Eff.RMSE':>9} {'|Effect|':>9} {'Confound':>8} "
+          f"{'Pos.Score':>9} {'%OOD':>6}")
     print("-" * header_w)
     for name, r in all_results.items():
         if r['total'] == 0:
@@ -643,15 +665,19 @@ def main():
         eff_m = b.get('effect_rmse', {}).get('mean', r['effect_rmse'])
         n_valid = r.get('direction_n_valid', 0)
         n_excl = r.get('direction_n_excluded', 0)
+        pos_score = r.get('mean_positivity_score', float('nan'))
+        frac_ood = r.get('frac_ood', float('nan'))
         print(f"{name:<25} {r['total']:>4} {r.get('n_tscms', 0):>4} "
               f"{rmse_m:>8.4f} {rmse_s:>7.4f} "
               f"{nmse_mean:>8.3f} {nmse_med:>8.4f} "
               f"{dir_m:>6.1%} {dir_s:>6.1%} "
               f"{n_valid:>4} {n_excl:>4} "
               f"{eff_m:>9.4f} {r['mean_effect_magnitude']:>9.4f} "
-              f"{r['mean_confounding']:>8.4f}")
+              f"{r['mean_confounding']:>8.4f} "
+              f"{pos_score:>9.4f} {frac_ood:>5.1%}")
     print("=" * header_w)
     print(f"(N=total queries, Nt=TSCMs, nMSE=MSE/Var, med=median nMSE, Nv/Nx=direction valid/excluded |t|<{DIR_ACC_EPS})")
+    print(f"(Pos.Score=mean positivity score (0=within 3σ), %OOD=fraction outside 3σ support)")
 
     # Per-offset summary table (if multiple offsets)
     if len(args.query_offsets) > 1:

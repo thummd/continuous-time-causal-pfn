@@ -5,6 +5,7 @@ model:
   n_encoder_layers: 4
   n_cross_attn_heads: 4
   n_buckets: 200
+  context_window: 200
   encoder:
     expand_v: 1.0
     use_short_conv: true
