@@ -41,8 +41,10 @@ class TSCMPrior:
     """
 
     def __init__(self, structure: TSCMStructure, burn_in: int = 50, seed: int = 42,
-                 use_lagged_edges: bool = True, intervention_scale: float = 2.0):
-        self.sampler = TSCMSampler(structure, max_lag=1, use_lagged_edges=use_lagged_edges)
+                 use_lagged_edges: bool = True, intervention_scale: float = 2.0,
+                 sigma_w: float = 0.5):
+        self.sampler = TSCMSampler(structure, max_lag=1, use_lagged_edges=use_lagged_edges,
+                                   sigma_w=sigma_w, sigma_b=sigma_w * 0.5)
         self.hidden_vars = self.sampler.get_hidden_vars()
         self.burn_in = burn_in
         self.intervention_scale = intervention_scale
@@ -162,8 +164,8 @@ class ExtendedCausalTimePrior:
         if T is None:
             T = self.sample_T()
 
-        # Generate with divergence retry (up to 5 attempts)
-        for _ in range(5):
+        # Generate with divergence retry (up to 20 attempts for long trajectories)
+        for _ in range(20):
             X_obs, X_int, intervention, scm = self.prior.generate_pair(T=T)
             if (not torch.isnan(X_obs).any() and not torch.isnan(X_int).any()
                     and X_obs.abs().max() < 10 and X_int.abs().max() < 10):
