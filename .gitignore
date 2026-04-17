@@ -5,9 +5,16 @@ dist/
 build/
 *.pt
 checkpoints/
-# Allow s4 sanity checkpoints via LFS
+# Allow s4 and s5 sanity checkpoints via LFS
 !checkpoints/s4_*/
 !checkpoints/s4_*/*.pt
+!checkpoints/s4_*/*.csv
+!checkpoints/s5_*/
+!checkpoints/s5_*/*.pt
+!checkpoints/s5_*/*.csv
 /data/
 .pytest_cache/
 identifiability.tex
+
+.env
+wandb/
