@@ -36,10 +36,23 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 & 2)
+### Current continuous-time module (phases 1 – 3)
 
-End-to-end pipeline: prior → dataloader → model → loss → backward is
-working and tested (73/73 tests pass in `tests/`).
+End-to-end training pipeline is runnable: config → CLI entry →
+prior → dataloader → model → loss → checkpoint.  89/89 tests pass in
+`tests/`.
+
+Quick start:
+
+```bash
+PYTHONPATH=. python scripts/ct_train.py \
+    --config configs/continuous_default.yaml \
+    --total-steps 5000 \
+    --save-dir checkpoints/ct/back_door_cf_regular
+```
+
+See `configs/continuous_default.yaml` for the full list of knobs and
+`scripts/ct_train.py --help` for CLI overrides.
 
 **Phase 1 — SDE primitives** (verified in `tests/test_continuous_prior.py`
 and `tests/test_continuous_encoder.py`):
@@ -96,56 +109,80 @@ and `tests/test_continuous_encoder.py`):
   output heads, `loss` / `predict` / `forward` — is inherited
   unchanged.
 
-### Not yet implemented (phase 3+)
+**Phase 3 — training pipeline** (verified in
+`tests/test_continuous_phase3.py`):
+
+- **Soft + time-varying interventions** in `ContinuousExtendedPrior`.
+  Sampled via `intervention_kind_probs=(p_hard, p_soft, p_tv)`; the
+  SCM already supported all three kinds, the extended prior now
+  dispatches accordingly.  Time-varying profiles
+  (`_StepProfile`, `_RampProfile`, `_SineProfile`) are picklable
+  dataclasses at module level so multiprocessing dataloaders still
+  work.
+- **Positivity-aware intervention clipping** via
+  `intervention_source="positivity_aware"`.  After simulating the
+  observational trajectory, the hard-intervention value is clipped to
+  the 3-sigma band around the pre-intervention target variable.  Soft
+  and time-varying interventions are no-ops.
+- **`dotime.training.continuous_trainer.train_continuous`** — training
+  loop for `ContinuousDoOverTimePFN`.  Cosine-with-warmup LR, AdamW,
+  gradient clipping, background prefetch, early stopping, optional
+  Wandb logging.  Quantile head only (see module docstring for why).
+- **`configs/continuous_default.yaml`** — full YAML config surface
+  covering model, prior, and training hyperparameters.
+- **`scripts/ct_train.py`** — CLI entry that loads the config, applies
+  overrides for the common ablation knobs
+  (`--schedule`, `--pair-mode`, `--tscm-structure`,
+  `--intervention-kind-probs`, `--intervention-source`, ...), and
+  calls `train_continuous`.
+
+### Not yet implemented (phase 4+)
 
 - PK/PD benchmark loaders (`dotime/data/pk_pd/`) — the subpackage
   exists but the Theophylline and Warfarin loaders are stubbed.
-- Positivity-aware intervention sampling in continuous time.
-- Soft + time-varying interventions in `ContinuousExtendedPrior` (only
-  hard interventions are wired through end to end; the SCM itself
-  supports all three kinds).
-- Training recipe / hyperparameter config for continuous-time prior +
-  encoder (base DoT-PFN configs at `configs/` need a CT variant).
 - CausalChamber evaluation hook with continuous-time sampling (the
   raw walks data is already sampled at 7-10 Hz continuous).
+- Random-graph continuous prior (analogue of CTP's random-DAG sampler;
+  phase 2 is restricted to named TSCM structures).
+- Bar-distribution head for continuous-time (phase 3 is quantile only).
 
-### Quick example: end-to-end forward + backward
+### Quick example: end-to-end training (Python API)
 
 ```python
 import torch
-from dotime.data.continuous_dataloader import ContinuousTemporalInterventionDataLoader
-from dotime.model.continuous import ContinuousDoOverTimePFN
+from dotime.training.continuous_trainer import train_continuous
 
-loader = ContinuousTemporalInterventionDataLoader(
-    num_steps=100,
-    batch_size=8,
-    tscm_structure="front_door",      # or back_door / instrumental_variable / ...
-    schedule="jittered",              # or regular / exponential
-    dt=1.0,
-    jitter=0.3,
-    pair_mode="counterfactual",       # or interventional
-    t_range=(50, 100),
-    n_max=16,
-    seed=0,
-)
-
-model = ContinuousDoOverTimePFN(
-    n_max=16,
-    embed_size=128,
-    n_encoder_layers=2,
-    head_type="quantile",
+model = train_continuous(
+    # Model
+    n_max=16, embed_size=128, n_encoder_layers=2,
+    context_window=64, num_time_frequencies=32,
     tau_levels=[0.1, 0.5, 0.9],
-    context_window=64,
-    num_time_frequencies=32,
+    # Prior
+    tscm_structure="front_door",
+    schedule="jittered",
+    dt=1.0, jitter=0.3,
+    pair_mode="counterfactual",
+    intervention_kind_probs=(0.5, 0.3, 0.2),  # hard / soft / time-varying
+    intervention_source="positivity_aware",
+    t_range=(50, 100),
+    # Training
+    batch_size=16, total_steps=5000,
+    eval_every=500, save_dir="checkpoints/ct/front_door",
 )
-opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
+```
 
-for batch in loader:
-    loss = model.loss(batch)    # uses batch["times"], batch["t_int_start"],
-                                # batch["int_onset_idx"] via the CT encoder
-    loss.backward()
-    opt.step()
-    opt.zero_grad()
+### CLI equivalent
+
+```bash
+PYTHONPATH=. python scripts/ct_train.py \
+    --config configs/continuous_default.yaml \
+    --tscm-structure front_door \
+    --schedule jittered \
+    --pair-mode counterfactual \
+    --intervention-kind-probs 0.5 0.3 0.2 \
+    --intervention-source positivity_aware \
+    --total-steps 5000 \
+    --save-dir checkpoints/ct/front_door
 ```
 
 ### SDE primitives (phase 1 standalone)

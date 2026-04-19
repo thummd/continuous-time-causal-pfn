@@ -1,0 +1,56 @@
+# Default configuration for Continuous-time Causal PFN training.
+#
+# Matches the existing configs/default.yaml structure so that CLI
+# overrides can be kept symmetric between the discrete and continuous
+# entry points.
+#
+# Scope: trains a single-structure PFN on counterfactual pairs drawn
+# from a regular-schedule OU prior.  Swap ``prior.schedule`` to
+# "jittered" or "exponential" to evaluate irregular-sampling behaviour.
+
+model:
+  n_max: 16                   # Keep compact for PK/PD-scale experiments.
+  embed_size: 256             # 2x smaller than the discrete default for faster iteration.
+  n_heads: 4
+  n_encoder_layers: 4
+  n_cross_attn_heads: 4
+  context_window: 128
+  n_mixer_layers: 1
+  num_time_frequencies: 64    # Fourier features span five decades in time.
+  time_min_freq: 0.01
+  time_max_freq: 10.0
+  tau_levels: [0.1, 0.25, 0.5, 0.75, 0.9]
+
+prior:
+  tscm_structure: back_door   # one of: back_door, front_door, instrumental_variable, rct_no_confounding, ...
+  schedule: regular           # regular | jittered | exponential
+  dt: 1.0                     # Regular / jittered spacing (units match the OU time scale).
+  jitter: 0.3                 # Fraction of ``dt`` for uniform jitter (jittered schedule only).
+  exp_rate: 1.0               # Rate of the Poisson schedule (exponential only).
+  pair_mode: counterfactual   # counterfactual (shared noise) | interventional (independent noise)
+  t_range: [60, 120]
+  intervention_kind_probs: [0.5, 0.3, 0.2]    # hard / soft / time-varying
+  intervention_source: prior  # prior | positivity_aware
+  intervention_value_scale: 2.0
+  intervention_window_frac: [0.1, 0.3]
+  soft_shift_scale: 1.0
+  time_varying_profile: random                 # step | ramp | sine | random
+  theta_range: [0.5, 2.0]     # OU mean-reversion rate prior.
+  sigma_range: [0.2, 0.6]     # OU diffusion coefficient prior.
+  weight_scale: 0.5           # Gaussian std on parental weights.
+
+training:
+  batch_size: 32
+  lr: 0.0002
+  warmup_steps: 200
+  total_steps: 5000
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_every: 500
+  eval_num_steps: 20
+  seed: 42
+  prefetch: 2                 # Background batch prefetch (0 = disabled).
+  target_key: Y_true          # Y_true | Y_causal_effect
+  n_queries: 1
+  query_mode: single          # single | all_pairs
+  early_stop_patience: 0

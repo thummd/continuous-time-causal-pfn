@@ -41,12 +41,64 @@ DoT-PFN behaviour.
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 import torch
 
 from dotime.prior.tscm_sampler import TSCMStructure
+
+
+# -------------------------------------------------------- time-varying profiles
+
+
+@dataclass
+class _StepProfile:
+    """Step intervention: ``c(t) = lo`` for ``t < t_mid`` else ``hi``.
+
+    Kept at module level so instances are picklable (multiprocessing
+    dataloaders require this).
+    """
+
+    t_mid: float
+    lo: float
+    hi: float
+
+    def __call__(self, t: float) -> float:
+        return self.hi if t >= self.t_mid else self.lo
+
+
+@dataclass
+class _RampProfile:
+    """Linear ramp from ``val_start`` at ``t_start`` to ``val_end`` at ``t_end``."""
+
+    t_start: float
+    t_end: float
+    val_start: float
+    val_end: float
+
+    def __call__(self, t: float) -> float:
+        if self.t_end == self.t_start:
+            return self.val_end
+        frac = (t - self.t_start) / (self.t_end - self.t_start)
+        frac = max(0.0, min(1.0, frac))
+        return self.val_start + frac * (self.val_end - self.val_start)
+
+
+@dataclass
+class _SineProfile:
+    """One-period sinusoid: ``c(t) = amplitude * sin(2*pi*(t - t_start)/period)``."""
+
+    t_start: float
+    period: float
+    amplitude: float
+
+    def __call__(self, t: float) -> float:
+        return self.amplitude * math.sin(
+            2.0 * math.pi * (t - self.t_start) / self.period
+        )
 
 from .continuous_scm import (
     ContinuousIntervention,
@@ -123,16 +175,36 @@ class ContinuousExtendedPrior:
         Lower/upper bounds (as fractions of total trajectory duration)
         for the intervention window length.  Default ``(0.1, 0.3)``
         matches the discrete-time roughly-30% default.
+    intervention_kind_probs : tuple of float
+        ``(p_hard, p_soft, p_time_varying)`` probabilities for sampling
+        the intervention kind per trajectory.  Must be nonnegative and
+        sum to a positive number (they will be normalised).  Defaults
+        to ``(0.5, 0.3, 0.2)`` matching the CausalTimePrior defaults.
+    intervention_source : {"prior", "positivity_aware"}
+        Source of the intervention value.  ``"prior"`` draws from
+        ``N(0, intervention_value_scale^2)``.  ``"positivity_aware"``
+        additionally clips the sampled hard-intervention value to
+        ``[mean - 3*sigma, mean + 3*sigma]`` of the pre-intervention
+        target variable's observational values, so that interventions
+        stay inside the support seen by the encoder.  Only applied to
+        hard interventions (soft and time-varying already live inside
+        the observed range by construction).
+    time_varying_profile : {"step", "ramp", "sine", "random"}
+        Which time-varying profile family to sample.  ``"random"`` picks
+        uniformly among the three fixed profiles per sample.
+    soft_shift_scale : float
+        Standard deviation of the Gaussian prior on the additive drift
+        shift ``delta`` for soft interventions.
     theta_range, sigma_range, weight_scale : forwarded to :class:`ContinuousTSCMSampler`.
     seed : int
         Seeds the initial ``torch.Generator`` and ``numpy`` RNG.
     """
 
-    # -- Which intervention kinds are currently implemented end to end. The
-    # discrete pipeline supports hard, soft, and time-varying interventions;
-    # for the workshop scope we start with hard interventions and will add the
-    # others once the training path is validated.
-    _SUPPORTED_KINDS = (InterventionKind.HARD,)
+    _INT_KIND_ORDER = (
+        InterventionKind.HARD,
+        InterventionKind.SOFT,
+        InterventionKind.TIME_VARYING,
+    )
 
     def __init__(
         self,
@@ -146,6 +218,10 @@ class ContinuousExtendedPrior:
         pair_mode: str = "counterfactual",
         intervention_value_scale: float = 2.0,
         intervention_window_frac: tuple = (0.1, 0.3),
+        intervention_kind_probs: tuple = (1.0, 0.0, 0.0),
+        intervention_source: str = "prior",
+        time_varying_profile: str = "random",
+        soft_shift_scale: float = 1.0,
         theta_range: tuple = (0.5, 2.0),
         sigma_range: tuple = (0.2, 0.6),
         weight_scale: float = 0.5,
@@ -153,6 +229,17 @@ class ContinuousExtendedPrior:
     ) -> None:
         if pair_mode not in ("counterfactual", "interventional"):
             raise ValueError(f"invalid pair_mode: {pair_mode!r}")
+        if intervention_source not in ("prior", "positivity_aware"):
+            raise ValueError(f"invalid intervention_source: {intervention_source!r}")
+        if time_varying_profile not in ("step", "ramp", "sine", "random"):
+            raise ValueError(f"invalid time_varying_profile: {time_varying_profile!r}")
+
+        probs = np.asarray(intervention_kind_probs, dtype=np.float64)
+        if probs.shape != (3,) or (probs < 0).any() or probs.sum() <= 0:
+            raise ValueError(
+                f"intervention_kind_probs must be length-3 nonnegative with positive sum, got {intervention_kind_probs}"
+            )
+        self.intervention_kind_probs = tuple((probs / probs.sum()).tolist())
 
         self.n_max = n_max
         self.t_range = tuple(t_range)
@@ -163,6 +250,9 @@ class ContinuousExtendedPrior:
         self.pair_mode = pair_mode
         self.intervention_value_scale = float(intervention_value_scale)
         self.intervention_window_frac = tuple(intervention_window_frac)
+        self.intervention_source = intervention_source
+        self.time_varying_profile = time_varying_profile
+        self.soft_shift_scale = float(soft_shift_scale)
 
         self.sampler = ContinuousTSCMSampler(
             structure=TSCMStructure(tscm_structure),
@@ -245,12 +335,12 @@ class ContinuousExtendedPrior:
         # 2. Sample SCM
         scm = self.sampler.sample(generator=self._torch_gen)
 
-        # 3. Sample intervention: variable = A (canonical index 0 after perm,
-        #    but we use topological index internally until after the permutation).
+        # 3. Sample intervention window and kind.  The *value* is
+        #    deferred until after we have simulated X_obs so that
+        #    positivity-aware clipping can see the pre-intervention
+        #    support.
         a_idx_topo = self.sampler.get_intervention_target()
         win_frac = float(self._np_rng.uniform(*self.intervention_window_frac))
-        # intervention window: place centred roughly in the second half
-        # of the trajectory so the encoder has a meaningful pre-window.
         win_len = max(self.dt * 2, win_frac * span)
         earliest_start = times[0].item() + 0.3 * span
         latest_start = times[-1].item() - win_len
@@ -259,50 +349,66 @@ class ContinuousExtendedPrior:
             latest_start = times[-1].item() - self.dt
         t_int_start = float(self._np_rng.uniform(earliest_start, latest_start))
         t_int_end = t_int_start + win_len
+        intervention_kind = self._sample_intervention_kind()
 
-        intervention_value = float(
-            self._np_rng.randn() * self.intervention_value_scale
-        )
-        intervention = ContinuousIntervention(
-            target=a_idx_topo,
-            t_start=t_int_start,
-            t_end=t_int_end,
-            kind=InterventionKind.HARD,
-            value=intervention_value,
-        )
+        # 4. Simulate X_obs (never sees the intervention).  Pre-sample
+        #    the noise up front so that the counterfactual path can
+        #    share it with the interventional simulation below.
+        shared_noise = scm._draw_noise(times.numel() - 1, generator=self._torch_gen)
+        _, X_obs_raw = scm.simulate(times, dts, intervention=None, noise=shared_noise)
 
-        # 4. Simulate paired trajectories
-        if self.pair_mode == "counterfactual":
-            _, X_obs, X_int = scm.sample_counterfactual_pair(
-                times, dts, intervention, generator=self._torch_gen,
-            )
-        else:  # "interventional"
-            _, X_obs, X_int = scm.sample_interventional_pair(
-                times, dts, intervention, generator=self._torch_gen,
-            )
-
-        # 5. Apply canonical permutation (A -> 0, Y -> N-1, ...)
-        X_obs = self._permute(X_obs)
-        X_int = self._permute(X_int)
-        # Re-map intervention_target / hidden_vars / outcome_var to canonical indices
-        topo_to_canon = [0] * self.n_vars
-        for canon_idx, topo_idx in enumerate(self.canonical_perm):
-            topo_to_canon[topo_idx] = canon_idx
-        intervention_target_canon = topo_to_canon[a_idx_topo]
-        outcome_canon = topo_to_canon[self.sampler.get_outcome_var()]
-
-        # 6. Find int_onset_idx (first observation time >= t_int_start)
+        # 5. Compute int_onset_idx and derive pre-intervention stats
+        #    from X_obs_raw; these feed positivity-aware value clipping.
         onset_mask = times >= t_int_start
         if onset_mask.any():
             int_onset_idx = int(onset_mask.float().argmax().item())
         else:
             int_onset_idx = T - 1
+        pre_int_target = X_obs_raw[:int_onset_idx, a_idx_topo]
 
-        # 7. Causal masking: zero out post-intervention observations
+        # 6. Sample intervention value (respects kind + positivity).
+        intervention_value, intervention_values_field = self._sample_intervention_value(
+            kind=intervention_kind,
+            pre_int_target=pre_int_target,
+            t_int_start=t_int_start,
+            t_int_end=t_int_end,
+        )
+        intervention = ContinuousIntervention(
+            target=a_idx_topo,
+            t_start=t_int_start,
+            t_end=t_int_end,
+            kind=intervention_kind,
+            value=intervention_values_field,
+        )
+
+        # 7. Simulate the interventional / counterfactual trajectory.
+        #    Counterfactual pair_mode reuses shared_noise so pre-window
+        #    trajectories match bit-for-bit; interventional pair_mode
+        #    draws a fresh noise realisation.
+        if self.pair_mode == "counterfactual":
+            _, X_int_raw = scm.simulate(
+                times, dts, intervention=intervention, noise=shared_noise,
+            )
+        else:
+            _, X_int_raw = scm.simulate(
+                times, dts, intervention=intervention, generator=self._torch_gen,
+            )
+        X_obs = X_obs_raw
+        X_int = X_int_raw
+
+        # 8. Apply canonical permutation (A -> 0, Y -> N-1, ...)
+        X_obs = self._permute(X_obs)
+        X_int = self._permute(X_int)
+        topo_to_canon = [0] * self.n_vars
+        for canon_idx, topo_idx in enumerate(self.canonical_perm):
+            topo_to_canon[topo_idx] = canon_idx
+        intervention_target_canon = topo_to_canon[a_idx_topo]
+
+        # 9. Causal masking: zero out post-intervention observations
         X_obs_masked = X_obs.clone()
         X_obs_masked[int_onset_idx:] = 0.0
 
-        # 8. Pad to n_max
+        # 10. Pad to n_max
         X_obs_padded = _pad_to_max_nodes(X_obs_masked, self.n_max)
         X_int_padded = _pad_to_max_nodes(X_int, self.n_max)
         variable_mask = torch.zeros(self.n_max)
@@ -341,7 +447,9 @@ class ContinuousExtendedPrior:
             # Intervention (existing contract)
             "int_onset_idx": torch.tensor(int_onset_idx, dtype=torch.long),
             "intervention_target": torch.tensor(intervention_target_canon, dtype=torch.long),
-            "intervention_type": torch.tensor(0, dtype=torch.long),  # HARD
+            "intervention_type": torch.tensor(
+                self._INT_KIND_ORDER.index(intervention_kind), dtype=torch.long,
+            ),
             "intervention_value": torch.tensor(intervention_value, dtype=torch.float32),
             "intervention_time_start": torch.tensor(t_int_start_norm, dtype=torch.float32),
             "intervention_time_end": torch.tensor(t_int_end_norm, dtype=torch.float32),
@@ -357,6 +465,85 @@ class ContinuousExtendedPrior:
             "Y_causal_effect": y_causal_effect if n_queries > 1 else torch.tensor(float(y_causal_effect.item()), dtype=torch.float32),
         }
         return sample
+
+    # ------------------------------------------------------------------ interventions
+
+    def _sample_intervention_kind(self) -> InterventionKind:
+        """Pick one of ``HARD`` / ``SOFT`` / ``TIME_VARYING`` per ``intervention_kind_probs``."""
+        idx = self._np_rng.choice(3, p=self.intervention_kind_probs)
+        return self._INT_KIND_ORDER[idx]
+
+    def _sample_intervention_value(
+        self,
+        kind: InterventionKind,
+        pre_int_target: torch.Tensor,
+        t_int_start: float,
+        t_int_end: float,
+    ) -> Tuple[float, object]:
+        """Sample (scalar_representation, intervention_values_field).
+
+        Returns a ``(scalar, values)`` pair where ``scalar`` is a
+        single-float summary for the batch dict's
+        ``intervention_value`` field (used as a scalar feature in the
+        mixer), and ``values`` is the object consumed by
+        :class:`ContinuousIntervention.value`.
+
+        - ``HARD``: both entries are the sampled constant.
+        - ``SOFT``: both entries are the additive drift shift.
+        - ``TIME_VARYING``: the scalar is a representative value at the
+          window midpoint; ``values`` is a picklable callable from
+          :mod:`intervention_profiles`.
+        """
+        if kind is InterventionKind.HARD:
+            value = float(self._np_rng.randn() * self.intervention_value_scale)
+            if (
+                self.intervention_source == "positivity_aware"
+                and pre_int_target.numel() > 1
+                and float(pre_int_target.std().item()) > 1e-4
+            ):
+                mu = float(pre_int_target.mean().item())
+                sigma = float(pre_int_target.std().item())
+                value = float(np.clip(value, mu - 3.0 * sigma, mu + 3.0 * sigma))
+            return value, value
+
+        if kind is InterventionKind.SOFT:
+            delta = float(self._np_rng.randn() * self.soft_shift_scale)
+            return delta, delta
+
+        # TIME_VARYING
+        profile_name = self.time_varying_profile
+        if profile_name == "random":
+            profile_name = self._np_rng.choice(["step", "ramp", "sine"])
+
+        amplitude = self.intervention_value_scale
+        if profile_name == "step":
+            t_mid = 0.5 * (t_int_start + t_int_end)
+            lo = -amplitude
+            hi = amplitude
+            callable_obj = _StepProfile(t_mid=float(t_mid), lo=float(lo), hi=float(hi))
+            scalar = 0.0  # mean of a symmetric step over the window
+        elif profile_name == "ramp":
+            lo = -amplitude
+            hi = amplitude
+            callable_obj = _RampProfile(
+                t_start=float(t_int_start),
+                t_end=float(t_int_end),
+                val_start=float(lo),
+                val_end=float(hi),
+            )
+            scalar = 0.0  # mean of the linear ramp over the window
+        elif profile_name == "sine":
+            period = max(t_int_end - t_int_start, self.dt)
+            callable_obj = _SineProfile(
+                t_start=float(t_int_start),
+                period=float(period),
+                amplitude=float(amplitude),
+            )
+            scalar = 0.0  # mean of a full sine cycle is zero
+        else:
+            raise ValueError(f"unknown time_varying_profile: {profile_name!r}")
+
+        return float(scalar), callable_obj
 
     # ------------------------------------------------------------------ queries
 
