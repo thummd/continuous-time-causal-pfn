@@ -1,0 +1,15 @@
+baseline:
+  - AR1Baseline
+  - ZeroBaseline
+  - BackDoorTabPFNInterventional
+  - BackDoorTabPFNObservational
+  - BackDoorTabPFNCausalEffect
+
+case_study: back_door
+n_samples: 3
+T: 1000
+device: cpu
+
+query_offsets: [0]
+burn_in: 50
+bootstrap_n: 1000

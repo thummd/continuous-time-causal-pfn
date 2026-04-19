@@ -1,0 +1,46 @@
+# Which baseline to evaluate. Must be one of the keys in BASELINES (prior_eval.py).
+# Available:
+#   AR1Baseline                   – predicts last observed value of the query variable
+#   ZeroBaseline                  – always predicts 0 (normalized mean)
+#   Chronos2Observational         – Chronos-2 forecast with intervention as known covariate
+#   BackDoorTabPFNInterventional  – back-door adjusted E[Y | do(A=a)] via TabPFN
+#   BackDoorTabPFNObservational   – back-door adjusted E[Y | A=a_obs] via TabPFN
+#   BackDoorTabPFNCausalEffect    – back-door adjusted causal effect (interventional - observational)
+#   BackDoorDoTPFNCausalEffect    – trained DoT-PFN on back-door causal objective
+#   BackDoorObsPFNCausalEffect    – trained DoT-PFN on back-door observational objective
+#   FrontDoorTabPFNInterventional – front-door adjusted E[Y | do(A=a)] via TabPFN
+#   FrontDoorTabPFNObservational  – front-door adjusted E[Y | A=a_obs] via TabPFN
+#   FrontDoorTabPFNCausalEffect   – front-door adjusted causal effect
+baseline:
+  - AR1Baseline
+  - ZeroBaseline
+  - BackDoorTabPFNInterventional
+  - BackDoorTabPFNObservational
+
+# Restrict ExtendedCausalTimePrior to a named TSCM structure, e.g. "back_door" or
+# "front_door". Set to null (or omit) to sample from the full random CTP prior.
+case_study: back_door
+
+# Number of valid prior samples to collect. Each sample corresponds to one
+# randomly drawn SCM + intervention; divergent samples are skipped and re-tried.
+n_samples: 1000
+
+# Length of each simulated time series (number of time steps).
+T: 5000
+
+# Torch device to run inference on. Use "cuda" on the cluster.
+device: cuda
+
+# Time offsets (in steps) after the intervention time at which to query Y.
+# [0] means query at the exact intervention step, i.e. p(Y_t | do(A_t), D_{<t}).
+# Offsets > 0 predict future steps p(Y_{t+k} | do(A_t)) and are only meaningful
+# with a multi-step rollout baseline.
+query_offsets: [0]
+
+# Number of burn-in steps discarded at the start of each SCM simulation to let
+# the system reach stationarity before recording observations.
+burn_in: 50
+
+# Number of bootstrap resamples used to compute confidence intervals on
+# per-sample metrics (RMSE, MAE, direction accuracy, etc.).
+bootstrap_n: 1000

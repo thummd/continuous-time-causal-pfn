@@ -66,6 +66,19 @@ class TSCMPrior:
         for canon_idx, topo_idx in enumerate(self.canonical_perm):
             self.canonical_inv_perm[topo_idx] = canon_idx
 
+    def get_outcome_var(self) -> int:
+        """Canonical-order index of the outcome variable Y.
+
+        After canonical reordering, Y is always at the last real column (N-1).
+        Used by evaluation/prior_eval.py (collaborator interface) to pin the
+        query target to the outcome.
+        """
+        return self.canonical_inv_perm[self._y_idx_topo]
+
+    def get_intervention_target(self) -> int:
+        """Canonical-order index of the treatment variable A (always 0)."""
+        return self.canonical_inv_perm[self._a_idx_topo]
+
     def generate_pair(self, T: int):
         """Return (X_obs, X_int, intervention, scm) like CausalTimePrior.
 
@@ -360,6 +373,12 @@ class ExtendedCausalTimePrior:
         int_time = min(int(np.mean(intervention.times)), T - 1)
         offset_lo, offset_hi = self.query_offset_range
 
+        # If the prior exposes a canonical outcome (TSCMPrior), restrict queries
+        # to that variable so we evaluate p(Y | do(A)) — not confounders/mediators.
+        # For full CTP prior (no fixed structure), fall back to all non-intervention.
+        fixed_outcome = (self.prior.get_outcome_var()
+                         if hasattr(self.prior, 'get_outcome_var') else None)
+
         def _sample_qtime():
             if offset_hi <= offset_lo:
                 return min(int_time + offset_lo, T - 1)
@@ -370,14 +389,17 @@ class ExtendedCausalTimePrior:
         query_time_idxs = []
 
         if query_mode == "all_pairs" and other_vars:
-            # Query ALL non-intervention variables, each at a sampled offset.
-            for qt in other_vars:
+            # Query the canonical outcome (or all non-intervention vars if no outcome).
+            candidates = [fixed_outcome] if fixed_outcome is not None else other_vars
+            for qt in candidates:
                 query_targets.append(qt)
                 query_time_idxs.append(_sample_qtime())
         else:
-            # Single mode: random queries, each at a sampled offset
+            # Single mode: canonical outcome if available, else random.
             for _ in range(n_queries):
-                if other_vars:
+                if fixed_outcome is not None:
+                    qt = fixed_outcome
+                elif other_vars:
                     qt = int(self.rng.choice(other_vars))
                 else:
                     qt = intervention_target
@@ -546,14 +568,22 @@ class ExtendedCausalTimePrior:
             else:
                 hidden_canonical = list(hidden_vars)
 
-            # Query: all non-hidden, non-intervention variables (canonical indices)
+            # Query targets. If the prior has a canonical outcome (TSCMPrior), pin
+            # queries to Y. Otherwise fall back to all non-hidden non-intervention.
+            fixed_outcome = (self.prior.get_outcome_var()
+                             if hasattr(self.prior, 'get_outcome_var') else None)
             other_vars = [v for v in range(N)
                           if v != int_target_out and v not in hidden_canonical]
             if query_mode == "all_pairs" and other_vars:
-                query_targets = other_vars
+                candidates = [fixed_outcome] if fixed_outcome is not None else other_vars
+                query_targets = list(candidates)
             else:
-                query_targets = [int(self.rng.choice(other_vars))] if other_vars else [int_target_out]
-                query_targets = query_targets * max(1, n_queries)
+                if fixed_outcome is not None:
+                    query_targets = [fixed_outcome] * max(1, n_queries)
+                elif other_vars:
+                    query_targets = [int(self.rng.choice(other_vars))] * max(1, n_queries)
+                else:
+                    query_targets = [int_target_out] * max(1, n_queries)
 
             # Fix 3: per-query offset from query_offset_range
             offset_lo, offset_hi = self.query_offset_range
