@@ -460,16 +460,32 @@ class ContinuousExtendedPrior:
         X_obs = self._permute(X_obs, canonical_perm)
         X_int = self._permute(X_int, canonical_perm)
         intervention_target_canon = topo_to_canon[a_idx_topo]
+        hidden_canon = [topo_to_canon[h] for h in ctx.hidden_vars_topo]
 
-        # 9. Causal masking: zero out post-intervention observations
+        # 9. Hide unobserved variables from the model in both X_obs and X_int.
+        #    The simulator has already run on the full (visible + hidden)
+        #    system, so dynamics of observed variables correctly reflect the
+        #    hidden confounder -- we only strip the model's *view* of the
+        #    hidden nodes here.  This is the mechanism that makes structures
+        #    like front_door and instrumental_variable actually test the
+        #    model's identifiability reasoning.
+        if hidden_canon:
+            for h in hidden_canon:
+                X_obs[:, h] = 0.0
+                X_int[:, h] = 0.0
+
+        # 10. Causal masking: zero out post-intervention observations
         X_obs_masked = X_obs.clone()
         X_obs_masked[int_onset_idx:] = 0.0
 
-        # 10. Pad to n_max
+        # 11. Pad to n_max and build the variable mask.  Hidden positions are
+        #     marked with 0 so the encoder treats them as padding.
         X_obs_padded = _pad_to_max_nodes(X_obs_masked, self.n_max)
         X_int_padded = _pad_to_max_nodes(X_int, self.n_max)
         variable_mask = torch.zeros(self.n_max)
         variable_mask[:n_vars] = 1.0
+        for h in hidden_canon:
+            variable_mask[h] = 0.0
 
         # 9. Sample queries (variable, time) pairs.  Query time defaults
         #    to the intervention window midpoint offset by a small jitter

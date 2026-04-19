@@ -107,6 +107,7 @@ class ContinuousTemporalInterventionDataLoader:
         n_min_prior: int = 3,
         n_max_prior: int = 10,
         edge_prob: float = 0.3,
+        hidden_prob: float = 0.0,
     ) -> None:
         """Construct the loader.
 
@@ -155,6 +156,7 @@ class ContinuousTemporalInterventionDataLoader:
                 n_min=n_min_prior,
                 n_max_prior=n_max_prior,
                 edge_prob=edge_prob,
+                hidden_prob=hidden_prob,
                 **common_kwargs,
             )
         else:

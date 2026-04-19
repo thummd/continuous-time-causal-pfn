@@ -27,6 +27,7 @@ prior:
   n_min_prior: 3
   n_max_prior: 10
   edge_prob: 0.3
+  hidden_prob: 0.0            # 0.0 = all nodes observed; >0 hides non-(A,Y) nodes i.i.d.
   # TSCM-structured mode only:
   tscm_structure: back_door   # one of: back_door, front_door, instrumental_variable, rct_no_confounding, ...
   schedule: regular           # regular | jittered | exponential

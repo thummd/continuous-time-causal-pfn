@@ -11,8 +11,12 @@ This module defines:
 - :class:`RandomContinuousSCMSampler`: samples a fresh ContinuousSCM
   on each call with random N in ``[n_min, n_max_prior]``, random
   topology via :meth:`ContinuousSCM.sample_random`, and random
-  (A, Y) roles.  Hidden variables are not supported yet (a future
-  extension will drop a random subset of nodes and re-root A/Y).
+  (A, Y) roles.  Each non-(A, Y) node is independently marked hidden
+  with probability ``hidden_prob``.  Hidden nodes still participate
+  in the simulated dynamics but are masked out of ``X_obs``,
+  ``X_int``, and ``variable_mask`` by the extended prior -- the same
+  semantics as the hidden ``U`` in named structures like
+  ``front_door`` and ``instrumental_variable``.
 - :class:`RandomContinuousExtendedPrior`: subclasses
   :class:`ContinuousExtendedPrior` and overrides ``_sample_scm_context``
   to plug the random sampler into the existing generate_sample /
@@ -95,6 +99,7 @@ class RandomContinuousSCMSampler:
         theta_range: tuple = (0.5, 2.0),
         sigma_range: tuple = (0.2, 0.6),
         weight_scale: float = 0.5,
+        hidden_prob: float = 0.0,
         seed: int = 0,
     ) -> None:
         if not 2 <= n_min <= n_max_prior:
@@ -104,6 +109,8 @@ class RandomContinuousSCMSampler:
             )
         if not 0.0 <= edge_prob <= 1.0:
             raise ValueError(f"edge_prob must be in [0, 1], got {edge_prob}")
+        if not 0.0 <= hidden_prob <= 1.0:
+            raise ValueError(f"hidden_prob must be in [0, 1], got {hidden_prob}")
 
         self.n_min = int(n_min)
         self.n_max_prior = int(n_max_prior)
@@ -111,6 +118,7 @@ class RandomContinuousSCMSampler:
         self.theta_range = tuple(theta_range)
         self.sigma_range = tuple(sigma_range)
         self.weight_scale = float(weight_scale)
+        self.hidden_prob = float(hidden_prob)
 
         self._torch_gen = torch.Generator().manual_seed(int(seed))
         self._np_rng = np.random.RandomState(int(seed))
@@ -124,7 +132,12 @@ class RandomContinuousSCMSampler:
         self,
         generator: Optional[torch.Generator] = None,
     ) -> tuple:
-        """Return ``(scm, n_vars, intervention_target_topo, outcome_var_topo)``.
+        """Return ``(scm, n_vars, A_topo, Y_topo, hidden_topo)``.
+
+        ``hidden_topo`` is a list of topological-order indices that
+        should be masked out of ``X_obs`` / ``X_int`` / ``variable_mask``
+        by the extended prior.  ``A`` and ``Y`` are guaranteed to be
+        *excluded* from the hidden list.
 
         The ``generator`` arg is kept for interface parity with
         :class:`ContinuousTSCMSampler` but the sampler's own
@@ -141,7 +154,18 @@ class RandomContinuousSCMSampler:
             generator=self._torch_gen,
         )
         a_idx, y_idx = _pick_intervention_and_outcome(n_vars, self._np_rng)
-        return scm, n_vars, a_idx, y_idx
+
+        # Decide which of the non-(A, Y) nodes are hidden.  We never hide
+        # A or Y because the model needs to intervene on A and predict Y.
+        hidden_topo: list = []
+        if self.hidden_prob > 0.0:
+            for v in range(n_vars):
+                if v == a_idx or v == y_idx:
+                    continue
+                if self._np_rng.rand() < self.hidden_prob:
+                    hidden_topo.append(v)
+
+        return scm, n_vars, a_idx, y_idx, hidden_topo
 
 
 class RandomContinuousExtendedPrior(ContinuousExtendedPrior):
@@ -165,6 +189,7 @@ class RandomContinuousExtendedPrior(ContinuousExtendedPrior):
         n_min: int = 3,
         n_max_prior: int = 10,
         edge_prob: float = 0.3,
+        hidden_prob: float = 0.0,
         tscm_structure_placeholder: str = "rct_no_confounding",
         **kwargs,
     ) -> None:
@@ -180,6 +205,7 @@ class RandomContinuousExtendedPrior(ContinuousExtendedPrior):
             theta_range=self._forwarded_kwarg(kwargs, "theta_range", (0.5, 2.0)),
             sigma_range=self._forwarded_kwarg(kwargs, "sigma_range", (0.2, 0.6)),
             weight_scale=self._forwarded_kwarg(kwargs, "weight_scale", 0.5),
+            hidden_prob=hidden_prob,
             seed=self._seed,
         )
 
@@ -194,17 +220,27 @@ class RandomContinuousExtendedPrior(ContinuousExtendedPrior):
 
     @property
     def hidden_vars(self) -> list:
-        """Random-graph prior does not currently sample hidden variables."""
+        """Init-time accessor; the per-sample hidden indices live on the
+        :class:`_SampledSCMContext` returned by ``_sample_scm_context``.
+
+        Because :class:`RandomContinuousSCMSampler` samples a fresh set
+        of hidden indices per trajectory, this attribute is *not* a
+        stable list -- it reports the configured ``hidden_prob``
+        indirectly by advertising an empty default.  Downstream code
+        should read the context object rather than this property.
+        """
         return []
 
     # ------------------------------------------------------------------ hook
 
     def _sample_scm_context(self) -> _SampledSCMContext:
-        scm, n_vars, a_idx, y_idx = self.random_sampler.sample(generator=self._torch_gen)
+        scm, n_vars, a_idx, y_idx, hidden_topo = self.random_sampler.sample(
+            generator=self._torch_gen,
+        )
         return _SampledSCMContext(
             scm=scm,
             n_vars=n_vars,
             intervention_target_topo=a_idx,
             outcome_var_topo=y_idx,
-            hidden_vars_topo=[],
+            hidden_vars_topo=list(hidden_topo),
         )

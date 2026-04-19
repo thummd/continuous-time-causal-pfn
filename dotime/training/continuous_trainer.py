@@ -99,6 +99,7 @@ def train_continuous(
     n_min_prior: int = 3,
     n_max_prior: int = 10,
     edge_prob: float = 0.3,
+    hidden_prob: float = 0.0,
     tscm_structure: str = "back_door",
     schedule: str = "regular",
     dt: float = 1.0,
@@ -180,7 +181,8 @@ def train_continuous(
     print("=" * 70)
     if prior_mode == "random":
         print(
-            f"   Prior: random-graph (N in [{n_min_prior}, {n_max_prior}], edge_prob={edge_prob})"
+            f"   Prior: random-graph (N in [{n_min_prior}, {n_max_prior}], "
+            f"edge_prob={edge_prob}, hidden_prob={hidden_prob})"
             f"  |  schedule: {schedule}  |  pair_mode: {pair_mode}"
         )
     else:
@@ -216,6 +218,7 @@ def train_continuous(
         n_min_prior=n_min_prior,
         n_max_prior=n_max_prior,
         edge_prob=edge_prob,
+        hidden_prob=hidden_prob,
         schedule=schedule,
         dt=dt,
         jitter=jitter,

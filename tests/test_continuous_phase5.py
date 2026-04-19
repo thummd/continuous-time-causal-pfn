@@ -91,21 +91,23 @@ def test_random_sampler_rejects_invalid_hyperparams():
 def test_random_sampler_produces_valid_scms():
     s = RandomContinuousSCMSampler(n_min=3, n_max_prior=6, seed=42)
     for _ in range(10):
-        scm, n_vars, a, y = s.sample()
+        scm, n_vars, a, y, hidden = s.sample()
         assert isinstance(scm, ContinuousSCM)
         assert 3 <= n_vars <= 6
         assert len(scm.mechanisms) == n_vars
         assert 0 <= a < n_vars
         assert 0 <= y < n_vars
         assert a != y
+        # With default hidden_prob=0.0 no nodes are hidden.
+        assert hidden == []
 
 
 def test_random_sampler_is_reproducible():
     s1 = RandomContinuousSCMSampler(n_min=3, n_max_prior=6, seed=17)
     s2 = RandomContinuousSCMSampler(n_min=3, n_max_prior=6, seed=17)
-    (_, n1, a1, y1) = s1.sample()
-    (_, n2, a2, y2) = s2.sample()
-    assert (n1, a1, y1) == (n2, a2, y2)
+    (_, n1, a1, y1, h1) = s1.sample()
+    (_, n2, a2, y2, h2) = s2.sample()
+    assert (n1, a1, y1, tuple(h1)) == (n2, a2, y2, tuple(h2))
 
 
 def test_random_sampler_covers_N_range():

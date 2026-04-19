@@ -52,6 +52,12 @@ def main() -> None:
     parser.add_argument("--n-min-prior", type=int, default=None)
     parser.add_argument("--n-max-prior", type=int, default=None)
     parser.add_argument("--edge-prob", type=float, default=None)
+    parser.add_argument(
+        "--hidden-prob", type=float, default=None,
+        help="Probability that each non-(A, Y) node is hidden "
+             "(random-graph prior only). Hidden nodes still drive the "
+             "dynamics but are masked out of X_obs / variable_mask.",
+    )
     parser.add_argument("--tscm-structure", type=str, default=None)
     parser.add_argument(
         "--schedule", type=str, default=None, choices=["regular", "jittered", "exponential"]
@@ -108,6 +114,7 @@ def main() -> None:
         n_min_prior=args.n_min_prior or p.get("n_min_prior", 3),
         n_max_prior=args.n_max_prior or p.get("n_max_prior", 10),
         edge_prob=args.edge_prob if args.edge_prob is not None else p.get("edge_prob", 0.3),
+        hidden_prob=args.hidden_prob if args.hidden_prob is not None else p.get("hidden_prob", 0.0),
         tscm_structure=args.tscm_structure or p["tscm_structure"],
         schedule=args.schedule or p["schedule"],
         dt=args.dt if args.dt is not None else p["dt"],

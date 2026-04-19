@@ -36,13 +36,14 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 5)
+### Current continuous-time module (phases 1 – 6)
 
 End-to-end **training** pipeline: config → CLI entry → prior →
 dataloader → model → loss → checkpoint.  The prior supports both
 **named TSCM structures** (back_door, front_door, IV, ...) and a
 **random-graph** continuous-time prior (variable N, random DAG, random
-(A, Y) roles).
+(A, Y) roles, configurable fraction of **hidden confounders** per
+trajectory).
 
 End-to-end **zero-shot evaluation** pipeline on two real-world
 benchmarks:
@@ -51,7 +52,7 @@ benchmarks:
 - **CausalChamber** (~10 Hz physical-system walks with known actuator
   interventions).
 
-135/135 tests pass in `tests/`.
+152/152 tests pass in `tests/`.
 
 Quick start — train:
 
@@ -62,15 +63,24 @@ PYTHONPATH=. python scripts/ct_train.py \
     --save-dir checkpoints/ct/back_door_cf_regular
 ```
 
-Quick start — train on a random-graph prior:
+Quick start — train on a random-graph prior (with or without hidden confounders):
 
 ```bash
+# all-observed random-graph prior
 PYTHONPATH=. python scripts/ct_train.py \
     --config configs/continuous_default.yaml \
     --prior-mode random \
     --n-min-prior 3 --n-max-prior 8 --edge-prob 0.3 \
     --total-steps 5000 \
     --save-dir checkpoints/ct/random_graph
+
+# with ~30% of non-(A, Y) nodes hidden per trajectory
+PYTHONPATH=. python scripts/ct_train.py \
+    --config configs/continuous_default.yaml \
+    --prior-mode random \
+    --n-min-prior 4 --n-max-prior 8 --edge-prob 0.3 --hidden-prob 0.3 \
+    --total-steps 5000 \
+    --save-dir checkpoints/ct/random_graph_hidden
 ```
 
 Quick start — evaluate zero-shot on Theophylline:
@@ -233,12 +243,36 @@ in `tests/test_continuous_phase5.py`):
   that loads CausalChamber data via ``load_chamber_episodes`` and runs
   zero-shot evaluation with the same output format as Theophylline.
 
-### Not yet implemented (phase 6+)
+**Phase 6 — hidden-variable confounders** (verified in
+`tests/test_continuous_phase6.py`):
+
+- **Bug fix**: :class:`ContinuousExtendedPrior` now correctly masks
+  hidden variables in both ``X_obs`` and ``X_int`` and zeros the
+  corresponding ``variable_mask`` entries.  Previously, structures
+  like ``front_door`` and ``instrumental_variable`` exposed the
+  hidden ``U``'s trajectory to the model, silently defeating the
+  purpose of the identifiability benchmark.  All five TSCM structures
+  with a hidden ``U`` now fully hide it from the encoder's view
+  while still letting ``U`` drive the dynamics of observed variables.
+- **`hidden_prob` on the random-graph prior**
+  (:class:`RandomContinuousSCMSampler`, :class:`RandomContinuousExtendedPrior`):
+  each non-(A, Y) node is independently marked hidden with this
+  probability.  ``A`` (treatment) and ``Y`` (outcome) are never
+  hidden.  Hidden nodes still participate in the OU simulation, so
+  their causal influence on observed variables remains in the
+  training data -- only the *observations* of the hidden node are
+  stripped.
+- **CLI / config plumbing**: new ``prior.hidden_prob`` key in
+  ``configs/continuous_default.yaml`` and ``--hidden-prob`` flag on
+  ``scripts/ct_train.py``.
+- **Query sampler** already respected hidden variables from phase 5
+  (``_sample_queries`` excludes them as query targets).  Phase 6
+  added a regression test that catches any future regression there.
+
+### Not yet implemented (phase 7+)
 
 - Warfarin PK/PD loader (more complex: dose → concentration → INR,
   multiple dosing regimens).
-- Hidden variables in the random-graph prior (currently all nodes are
-  observed).
 - Bar-distribution head for continuous-time (phase 3 is quantile only).
 
 ### Quick example: end-to-end training (Python API)
