@@ -97,7 +97,7 @@ class BatchedTSCMSimulator:
         device: str = "cpu",
         int_target: Optional[int] = None,
         int_time: Optional[int] = None,
-        int_value: Optional[float] = None,
+        int_value=None,
         divergence_threshold: float = 10.0,
         seed: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -134,7 +134,8 @@ class BatchedTSCMSimulator:
         dev = torch.device(device)
 
         if seed is not None:
-            gen = torch.Generator(device='cpu').manual_seed(seed)
+            # Generator must match device for torch.randn(device=dev, generator=gen)
+            gen = torch.Generator(device=dev).manual_seed(seed)
         else:
             gen = None
 
@@ -156,17 +157,19 @@ class BatchedTSCMSimulator:
 
         # Sample per-variable activation index: (B, N) -> index into BATCHED_ACTIVATIONS
         n_acts = len(BATCHED_ACTIVATIONS)
-        act_idx = torch.randint(0, n_acts, (B, self.N), generator=gen)
+        act_idx = torch.randint(0, n_acts, (B, self.N), device=dev, generator=gen)
 
         # Pre-sample noise: (B, total_T, N)
         noise = torch.randn(B, total_T, self.N, device=dev, generator=gen) * self.noise_std
 
-        # Intervention setup
+        # Intervention setup — int_value can be None, scalar, or a (B,) tensor
         do_intervention = (int_target is not None and int_time is not None)
         if do_intervention and int_value is None:
             int_value_t = torch.randn(B, device=dev, generator=gen) * self.sigma_w * 2.0
+        elif do_intervention and torch.is_tensor(int_value):
+            int_value_t = int_value.to(dev).float()
         elif do_intervention:
-            int_value_t = torch.full((B,), int_value, device=dev)
+            int_value_t = torch.full((B,), float(int_value), device=dev)
         else:
             int_value_t = None
 
@@ -194,14 +197,18 @@ class BatchedTSCMSimulator:
                 # Combined + bias + noise
                 combined = instant + lagged + bias[:, i] + noise[:, t, i]
 
-                # Apply per-sample activation
-                # Group by activation type to avoid per-sample branching
-                result = torch.zeros(B, device=dev)
-                for a_idx in range(n_acts):
-                    mask = (act_idx[:, i] == a_idx)
-                    if mask.any():
-                        act_fn = BATCHED_ACTIVATIONS[a_idx]
-                        result[mask] = act_fn(combined[mask])
+                # Apply per-sample activation. Compute all 4 activations in
+                # parallel (no kernel-launch overhead penalty for tiny ops on
+                # GPU) and select via per-sample index. Avoids mask indexing
+                # which forces sync/dynamic shape on GPU.
+                # Activations: 0=Identity, 1=tanh, 2=tanh(relu), 3=relu
+                act_id = combined
+                act_tanh = torch.tanh(combined)
+                act_relu = torch.relu(combined)
+                act_tanhrelu = torch.tanh(act_relu)
+                # Stack: (B, 4) then gather by act_idx[:, i]
+                stacked = torch.stack([act_id, act_tanh, act_tanhrelu, act_relu], dim=-1)
+                result = stacked.gather(-1, act_idx[:, i:i+1]).squeeze(-1)
 
                 buffer[:, t, i] = result
 
@@ -223,71 +230,71 @@ class BatchedTSCMSimulator:
         device: str = "cpu",
         intervention_scale: float = 4.0,
         seed: int = 42,
+        positivity_clip: bool = False,
     ) -> dict:
         """Generate B observational + interventional trajectory pairs.
+
+        Parameters
+        ----------
+        positivity_clip : bool
+            If True, per-sample clip each int_value to [obs_mu - 3σ, obs_mu + 3σ]
+            where (obs_mu, obs_sigma) are computed from the pre-intervention
+            observational window of that sample's treatment variable.
 
         Returns a dict with tensors ready for batched processing:
             X_obs: (B, T, N)
             X_int: (B, T, N)
             int_target: (B,) int — intervention target index
-            int_value: (B,) float — intervention values
-            int_time: (B,) int — intervention time (relative to T)
+            int_value: (B,) float — intervention values (per-sample)
+            int_time: (B,) int — intervention time (single common value for batch)
             valid: (B,) bool — non-diverged samples
         """
-        # Pick intervention target: the treatment variable A
         int_target_idx = self.topo.index('A')
 
-        # Random intervention time per sample: uniform in [10, T-10]
         gen = torch.Generator().manual_seed(seed)
         t_lo = min(10, T - 1)
         t_hi = max(t_lo + 1, T - 10)
-        int_times = torch.randint(t_lo, t_hi, (B,), generator=gen)
+        # Use a single common int_time for the whole batch (so we can vectorize
+        # the interventional simulate() call). Per-sample values are still used.
+        common_int_time = int(torch.randint(t_lo, t_hi, (1,), generator=gen).item())
 
-        # Random intervention values
+        # Per-sample intervention values: N(0, intervention_scale)
         int_values = torch.randn(B, generator=gen) * intervention_scale
 
-        # Generate observational trajectories (no intervention)
+        # 1) Observational simulation
         X_obs, valid_obs = self.simulate(
             B, T, burn_in=burn_in, device=device, seed=seed,
         )
 
-        # Generate interventional trajectories
-        # Note: each sample has a different int_time, so we simulate one at a time
-        # for the intervention. For efficiency, we could batch samples with the
-        # same int_time, but for now we use a single common int_time.
-        # Simplification: use a single random int_time for the whole batch.
-        common_int_time = int(int_times[0].item())
+        # 2) Per-sample positivity clip — keeps int_value within observed 3σ of
+        #    the treatment variable's pre-intervention support. Without this,
+        #    many int_values land in the tails and the model sees distributions
+        #    it can't interpolate.
+        if positivity_clip:
+            pre_int = X_obs[:, :common_int_time, int_target_idx].detach().cpu()  # (B, t<)
+            if pre_int.shape[1] > 1:
+                mu = pre_int.mean(dim=1)                       # (B,)
+                sigma = pre_int.std(dim=1).clamp(min=1e-4)     # (B,)
+                lo = mu - 3.0 * sigma
+                hi = mu + 3.0 * sigma
+                int_values = torch.clamp(int_values, min=lo, max=hi)
+
+        # 3) Interventional simulation with per-sample int_values
         X_int, valid_int = self.simulate(
             B, T, burn_in=burn_in, device=device,
             int_target=int_target_idx,
             int_time=common_int_time,
-            int_value=None,  # will be sampled per-sample inside simulate
-            seed=seed + 1,  # different seed so obs ≠ int even without intervention
-        )
-        # Override with the specific int_values
-        # Re-simulate with per-sample values by using the batch
-        # Actually the simulate() already samples per-sample values when int_value=None.
-        # Let's get the actual values used:
-        gen2 = torch.Generator().manual_seed(seed + 1)
-        # Skip to where int_value is sampled in simulate()
-        # This is fragile — better to return int_value from simulate()
-        # For now, use a fixed value for all samples:
-        common_int_value = float(int_values[0].item())
-        X_int2, valid_int2 = self.simulate(
-            B, T, burn_in=burn_in, device=device,
-            int_target=int_target_idx,
-            int_time=common_int_time,
-            int_value=common_int_value,
+            int_value=int_values,
             seed=seed + 1,
         )
 
-        valid = valid_obs & valid_int2
+        valid = valid_obs & valid_int
 
         return {
             'X_obs': X_obs,
-            'X_int': X_int2,
+            'X_int': X_int,
             'int_target': torch.full((B,), int_target_idx, dtype=torch.long),
-            'int_value': torch.full((B,), common_int_value),
+            'int_value': int_values,
             'int_time': torch.full((B,), common_int_time, dtype=torch.long),
             'valid': valid,
             'N': self.N,

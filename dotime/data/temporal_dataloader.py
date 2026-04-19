@@ -40,6 +40,9 @@ class TemporalInterventionDataLoader:
         use_lagged_edges: bool = True,
         intervention_scale: float = 2.0,
         causal_mask_mode: str = "full",
+        dynamics_burn_in: int = 0,
+        sim_device: str = None,
+        query_offset_range: tuple = (0, 0),
     ):
         self.num_steps = num_steps
         self.batch_size = batch_size
@@ -50,6 +53,13 @@ class TemporalInterventionDataLoader:
         self.target_key = target_key
         self.n_queries = n_queries
         self.query_mode = query_mode
+
+        # Default sim_device to CPU. The BatchedTSCMSimulator's sequential T-loop
+        # has too much kernel-launch overhead on GPU for typical batch sizes;
+        # CPU is faster for B=16 with N<10 vars. Use sim_device='cuda:N' only if
+        # you have very large batches where GPU saturates.
+        if sim_device is None:
+            sim_device = "cpu"
 
         self.prior = ExtendedCausalTimePrior(
             n_max=n_max,
@@ -63,6 +73,9 @@ class TemporalInterventionDataLoader:
             use_lagged_edges=use_lagged_edges,
             intervention_scale=intervention_scale,
             causal_mask_mode=causal_mask_mode,
+            dynamics_burn_in=dynamics_burn_in,
+            sim_device=sim_device,
+            query_offset_range=query_offset_range,
         )
 
     def __len__(self) -> int:

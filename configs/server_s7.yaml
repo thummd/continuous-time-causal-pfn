@@ -2,11 +2,12 @@ model:
   n_max: 12            # prior generates up to 10 vars + small padding margin
   embed_size: 512      # match TempoPFN
   n_heads: 4           # match TempoPFN
-  n_encoder_layers: 6  # reduced from 10 to fit shared A100
+  n_encoder_layers: 6  # unchanged from s6 (isolated mixer effect for s7)
   n_cross_attn_heads: 4
+  n_mixer_layers: 3    # Fix 4: deeper mixer for multi-hop A→M→Y reasoning
   n_buckets: 1000
   context_window: 200  # max pre-intervention steps for relative positional encoding
-  encoder:             # GatedDeltaProduct config (from TempoPFN)
+  encoder:             # GatedDeltaProduct config (from TempoPFN, unused for transformer backend)
     expand_v: 1.0
     use_short_conv: true
     conv_size: 32
@@ -20,18 +21,18 @@ prior:
   n_max: 10
   t_range: [50, 200]
   burn_in: 50
-  dynamics_burn_in: 500   # extra burn-in for SCM dynamics (10x more than s5's 50)
+  dynamics_burn_in: 500
   downstream_prob: 0.7
 
 training:
   batch_size: 16
-  lr: 0.0002           # match TempoPFN
+  lr: 0.0002
   warmup_steps: 1000
   total_steps: 100000
-  grad_clip: 1.0       # tighter clipping to prevent spike-induced parameter jumps
+  grad_clip: 1.0
   weight_decay: 0.01
   bucket_calibration_samples: 10000
   eval_every: 500
   seed: 42
-  pinball_weight: 0.0            # 0 = disabled, >0 = auxiliary pinball loss weight
+  pinball_weight: 0.0
   pinball_quantiles: [0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95]

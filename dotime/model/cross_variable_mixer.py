@@ -55,6 +55,14 @@ class CrossVariableMixer(nn.Module):
         self.attn_norms = nn.ModuleList([
             nn.LayerNorm(embed_size) for _ in range(n_mixer_layers)
         ])
+        # Fix 2b: per-layer gated residual. Learns how much attention output
+        # (which depends on intervention spec) replaces vs. adds to context.
+        # Init bias=0 so sigmoid(0)=0.5 — equal mixing at init.
+        self.gate_projs = nn.ModuleList([
+            nn.Linear(embed_size, embed_size) for _ in range(n_mixer_layers)
+        ])
+        for g in self.gate_projs:
+            nn.init.zeros_(g.bias)
 
         # Output projection
         self.output_proj = nn.Sequential(
@@ -130,14 +138,18 @@ class CrossVariableMixer(nn.Module):
         # Cross-attention over variable representations (stacked layers)
         key_padding_mask = (variable_mask == 0)  # (B, N_max)
 
-        for attn, norm in zip(self.cross_attn_layers, self.attn_norms):
+        for attn, norm, gate_proj in zip(
+            self.cross_attn_layers, self.attn_norms, self.gate_projs
+        ):
             h_out, _ = attn(
                 query=context,
                 key=h_vars,
                 value=h_vars,
                 key_padding_mask=key_padding_mask,
             )  # (B, 1, E)
-            context = norm(h_out + context)  # residual + norm
+            # Gated residual: learnable mix between attention output and prior context
+            gate = torch.sigmoid(gate_proj(context))  # (B, 1, E)
+            context = norm(gate * h_out + (1 - gate) * context)
 
         h_causal = context.squeeze(1)  # (B, E)
         h_causal = self.output_proj(h_causal)  # (B, E)

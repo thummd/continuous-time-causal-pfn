@@ -52,16 +52,35 @@ class TSCMPrior:
         self.gen = torch.Generator().manual_seed(seed)
         self.config = {'burn_in': burn_in}
 
+        # Canonical permutation: A at index 0, Y at index N-1, others in between.
+        # The permutation maps topo-order indices -> canonical-order indices.
+        # perm[canonical_idx] = topo_idx.
+        self._a_idx_topo = self.sampler.get_intervention_target()
+        self._y_idx_topo = self.sampler.get_outcome_var()
+        dag = self.sampler._build_dag()
+        N = len(dag.topo_order)
+        middle = [i for i in range(N)
+                  if i != self._a_idx_topo and i != self._y_idx_topo]
+        self.canonical_perm = [self._a_idx_topo] + middle + [self._y_idx_topo]
+        self.canonical_inv_perm = [0] * N
+        for canon_idx, topo_idx in enumerate(self.canonical_perm):
+            self.canonical_inv_perm[topo_idx] = canon_idx
+
     def generate_pair(self, T: int):
-        """Return (X_obs, X_int, intervention, scm) like CausalTimePrior."""
+        """Return (X_obs, X_int, intervention, scm) like CausalTimePrior.
+
+        Data is returned in topo-order; the canonical reordering is applied
+        at the ExtendedCausalTimePrior level after all re-simulation logic.
+        """
         scm = self.sampler.sample(generator=self.gen)
         N = len(scm._topo)
 
         X_obs = scm.sample_observational(T=T, burn_in=self.burn_in, generator=self.gen)
 
-        # Pick intervention target: first non-hidden variable
-        valid = [i for i in range(N) if i not in self.hidden_vars]
-        int_target = valid[0] if valid else 0
+        # Intervention target: always the treatment variable A (topo-order index).
+        # This was previously `valid[0]` which picked the first non-hidden variable,
+        # which for BD (topo=[X, A, Y]) incorrectly selected X.
+        int_target = self._a_idx_topo
 
         # Intervention at a random time in [10, T-10], matching CTP's range
         t_lo = min(10, T - 1)
@@ -102,6 +121,8 @@ class ExtendedCausalTimePrior:
         intervention_scale: float = 2.0,
         causal_mask_mode: str = "full",
         dynamics_burn_in: int = 0,
+        sim_device: str = "cpu",
+        query_offset_range: tuple = (0, 0),
     ):
         self.n_max = n_max
         self.t_range = t_range
@@ -109,6 +130,10 @@ class ExtendedCausalTimePrior:
         self.intervention_source = intervention_source
         self.causal_mask_mode = causal_mask_mode
         self.dynamics_burn_in = dynamics_burn_in
+        self._sim_device = sim_device
+        # query_offset_range: (lo, hi) — sample offset in [lo, hi] per query,
+        # query_time_idx = int_time + offset (clamped to T-1). Fix 3 for FD.
+        self.query_offset_range = tuple(query_offset_range)
 
         self.tscm_structure = tscm_structure
         self.intervention_scale = intervention_scale
@@ -306,29 +331,58 @@ class ExtendedCausalTimePrior:
         else:
             positivity_score = 0.0
 
+        # Fix 2a: normalize intervention_value by observed std for scale-consistency
+        # with positional/timing features in the mixer. Store raw value too.
+        intervention_value_raw = intervention_value
+        if pre_int.numel() > 1 and float(pre_int.std().item()) > 1e-4:
+            intervention_value_norm = intervention_value / max(float(pre_int.std().item()), 1e-4)
+        else:
+            intervention_value_norm = intervention_value
+
+        # Fix 2c: canonical column reordering (TSCMPrior only). Put treatment A at
+        # column 0, outcome Y at column N-1, remaining (covariates/hidden) in between.
+        # Remap intervention_target and the padded tensors; variable_mask is unchanged
+        # because the permutation only reshuffles within the first N (real) slots.
+        canonical_inv_perm = getattr(self.prior, 'canonical_inv_perm', None)
+        if canonical_inv_perm is not None:
+            perm = self.prior.canonical_perm  # canonical_idx -> topo_idx
+            full_perm = list(perm) + list(range(N, self.n_max))
+            perm_t = torch.tensor(full_perm, dtype=torch.long)
+            X_obs_padded = X_obs_padded.index_select(dim=1, index=perm_t)
+            X_int_padded = X_int_padded.index_select(dim=1, index=perm_t)
+            intervention_target = canonical_inv_perm[intervention_target]
+
         # Query sampling — aligned with identifiability theory:
-        # P(Y_t | do(A_t), H_{t-1},...,H_{t-K})
+        # P(Y_{t+offset} | do(A_t), H_{t-1},...,H_{t-K})
+        # Fix 3: sample per-query offset from query_offset_range so the mediator
+        # (or any propagation chain) has time to reflect the intervention.
         other_vars = [v for v in range(N) if v != intervention_target]
         int_time = min(int(np.mean(intervention.times)), T - 1)
+        offset_lo, offset_hi = self.query_offset_range
+
+        def _sample_qtime():
+            if offset_hi <= offset_lo:
+                return min(int_time + offset_lo, T - 1)
+            off = int(self.rng.randint(offset_lo, offset_hi + 1))
+            return min(int_time + off, T - 1)
 
         query_targets = []
         query_time_idxs = []
 
         if query_mode == "all_pairs" and other_vars:
-            # Query ALL non-intervention variables at intervention time.
-            # This forces the model to learn the full causal structure.
+            # Query ALL non-intervention variables, each at a sampled offset.
             for qt in other_vars:
                 query_targets.append(qt)
-                query_time_idxs.append(int_time)
+                query_time_idxs.append(_sample_qtime())
         else:
-            # Single mode: random queries at intervention time
+            # Single mode: random queries, each at a sampled offset
             for _ in range(n_queries):
                 if other_vars:
                     qt = int(self.rng.choice(other_vars))
                 else:
                     qt = intervention_target
                 query_targets.append(qt)
-                query_time_idxs.append(int_time)
+                query_time_idxs.append(_sample_qtime())
 
         # Ground truth: raw interventional value and causal effect
         y_trues = [float(X_int_padded[qti, qt].item())
@@ -343,11 +397,13 @@ class ExtendedCausalTimePrior:
             query_target_t = torch.tensor(query_targets[0], dtype=torch.long)
             query_time_t = torch.tensor(query_time_idxs[0] / T, dtype=torch.float32)
             y_true_t = torch.tensor(y_trues[0], dtype=torch.float32)
+            y_obs_t = torch.tensor(y_obs_vals[0], dtype=torch.float32)
             y_effect_t = torch.tensor(y_effects[0], dtype=torch.float32)
         else:
             query_target_t = torch.tensor(query_targets, dtype=torch.long)
             query_time_t = torch.tensor([qti / T for qti in query_time_idxs], dtype=torch.float32)
             y_true_t = torch.tensor(y_trues, dtype=torch.float32)
+            y_obs_t = torch.tensor(y_obs_vals, dtype=torch.float32)
             y_effect_t = torch.tensor(y_effects, dtype=torch.float32)
 
         return {
@@ -357,13 +413,15 @@ class ExtendedCausalTimePrior:
             'int_onset_idx': torch.tensor(int_onset, dtype=torch.long),
             'intervention_target': torch.tensor(intervention_target, dtype=torch.long),
             'intervention_type': torch.tensor(intervention_type, dtype=torch.long),
-            'intervention_value': torch.tensor(intervention_value, dtype=torch.float32),
+            'intervention_value': torch.tensor(intervention_value_norm, dtype=torch.float32),
+            'intervention_value_raw': torch.tensor(intervention_value_raw, dtype=torch.float32),
             'intervention_time_start': torch.tensor(time_start / T, dtype=torch.float32),
             'intervention_time_end': torch.tensor(time_end / T, dtype=torch.float32),
             'positivity_score': torch.tensor(positivity_score, dtype=torch.float32),
             'query_target': query_target_t,
             'query_time': query_time_t,
             'Y_true': y_true_t,
+            'Y_obs': y_obs_t,
             'Y_causal_effect': y_effect_t,
             'num_vars': torch.tensor(N, dtype=torch.long),
         }
@@ -412,17 +470,24 @@ class ExtendedCausalTimePrior:
         sim = self.batched_sim
         seed = int(self.rng.randint(0, 2**31))
 
+        # Fix 1: positivity_aware in batched path = per-sample 3σ clip
+        positivity_clip = (self.intervention_source == "positivity_aware")
+
         pairs = sim.generate_pairs(
             B=batch_size, T=T, burn_in=self._burn_in_total,
-            device='cpu', intervention_scale=self.intervention_scale, seed=seed,
+            device=self._sim_device,
+            intervention_scale=self.intervention_scale, seed=seed,
+            positivity_clip=positivity_clip,
         )
 
-        X_obs_all = pairs['X_obs']      # (B, T, N_raw)
-        X_int_all = pairs['X_int']      # (B, T, N_raw)
-        valid = pairs['valid']           # (B,)
+        # Move bulk simulation results to CPU once for the per-sample dict
+        # construction below (Python loops + .item() calls are CPU-bound).
+        X_obs_all = pairs['X_obs'].cpu()      # (B, T, N_raw)
+        X_int_all = pairs['X_int'].cpu()      # (B, T, N_raw)
+        valid = pairs['valid'].cpu()           # (B,)
         int_target = int(pairs['int_target'][0].item())
         int_time_idx = int(pairs['int_time'][0].item())
-        int_value = float(pairs['int_value'][0].item())
+        int_values_per_sample = pairs['int_value'].cpu()  # (B,) per-sample
         N = pairs['N']
         hidden_vars = pairs['hidden_vars']
 
@@ -435,16 +500,16 @@ class ExtendedCausalTimePrior:
                 samples.append(s)
                 continue
 
-            X_obs = X_obs_all[b]  # (T, N_raw)
+            X_obs = X_obs_all[b]  # (T, N_raw) in topo order
             X_int = X_int_all[b]
 
-            # Causal masking
+            # Causal masking (topo order)
             X_obs_masked = X_obs.clone()
             X_obs_masked[int_time_idx:] = 0.0
             if self.causal_mask_mode == "interpolation":
                 X_obs_masked[int_time_idx, int_target] = X_obs[int_time_idx, int_target]
 
-            # Pad to n_max
+            # Pad to n_max (topo order in first N cols)
             X_obs_padded = pad_to_max_nodes(X_obs_masked, self.n_max)
             X_int_padded = pad_to_max_nodes(X_int, self.n_max)
 
@@ -453,19 +518,58 @@ class ExtendedCausalTimePrior:
                 if j not in hidden_vars:
                     variable_mask[j] = 1.0
 
-            # Query: all non-hidden, non-intervention variables at int_time
-            other_vars = [v for v in range(N) if v != int_target and v not in hidden_vars]
+            # Fix 2a: positivity score + normalize intervention_value (topo indices)
+            # Use this sample's actual int_value (not the batch's)
+            pre_int = X_obs[:int_time_idx, int_target]
+            int_value_raw = float(int_values_per_sample[b].item())
+            if pre_int.numel() > 1 and float(pre_int.std().item()) > 1e-4:
+                obs_mu = float(pre_int.mean().item())
+                obs_sigma = float(pre_int.std().item())
+                positivity_score = max(0.0, abs(int_value_raw - obs_mu) / max(obs_sigma, 1e-4) - 3.0)
+                int_value_norm = int_value_raw / max(obs_sigma, 1e-4)
+            else:
+                positivity_score = 0.0
+                int_value_norm = int_value_raw
+
+            # Fix 2c: canonical column reordering on padded tensors (topo -> canonical)
+            canonical_inv_perm = getattr(self.prior, 'canonical_inv_perm', None)
+            int_target_out = int_target
+            if canonical_inv_perm is not None:
+                perm = self.prior.canonical_perm  # canonical_idx -> topo_idx
+                full_perm = list(perm) + list(range(N, self.n_max))
+                perm_t = torch.tensor(full_perm, dtype=torch.long)
+                X_obs_padded = X_obs_padded.index_select(dim=1, index=perm_t)
+                X_int_padded = X_int_padded.index_select(dim=1, index=perm_t)
+                int_target_out = canonical_inv_perm[int_target]
+                # Remap hidden_vars to canonical indices for query filtering
+                hidden_canonical = [canonical_inv_perm[h] for h in hidden_vars]
+            else:
+                hidden_canonical = list(hidden_vars)
+
+            # Query: all non-hidden, non-intervention variables (canonical indices)
+            other_vars = [v for v in range(N)
+                          if v != int_target_out and v not in hidden_canonical]
             if query_mode == "all_pairs" and other_vars:
                 query_targets = other_vars
             else:
-                query_targets = [self.rng.choice(other_vars)] if other_vars else [int_target]
+                query_targets = [int(self.rng.choice(other_vars))] if other_vars else [int_target_out]
                 query_targets = query_targets * max(1, n_queries)
 
-            query_time_idxs = [int_time_idx] * len(query_targets)
+            # Fix 3: per-query offset from query_offset_range
+            offset_lo, offset_hi = self.query_offset_range
+            if offset_hi <= offset_lo:
+                query_time_idxs = [min(int_time_idx + offset_lo, T - 1)] * len(query_targets)
+            else:
+                query_time_idxs = [
+                    min(int_time_idx + int(self.rng.randint(offset_lo, offset_hi + 1)), T - 1)
+                    for _ in query_targets
+                ]
 
-            # Ground truth
-            y_trues = [float(X_int_padded[int_time_idx, qt].item()) for qt in query_targets]
-            y_obs_vals = [float(X_obs_padded[int_time_idx, qt].item()) for qt in query_targets]
+            # Ground truth (canonical-indexed padded tensors, per-query time)
+            y_trues = [float(X_int_padded[qti, qt].item())
+                       for qt, qti in zip(query_targets, query_time_idxs)]
+            y_obs_vals = [float(X_obs_padded[qti, qt].item())
+                          for qt, qti in zip(query_targets, query_time_idxs)]
             y_effects = [yi - yo for yi, yo in zip(y_trues, y_obs_vals)]
 
             actual_nq = len(query_targets)
@@ -473,29 +577,33 @@ class ExtendedCausalTimePrior:
                 qt_t = torch.tensor(query_targets[0], dtype=torch.long)
                 qtime_t = torch.tensor(query_time_idxs[0] / T, dtype=torch.float32)
                 yt_t = torch.tensor(y_trues[0], dtype=torch.float32)
+                yo_t = torch.tensor(y_obs_vals[0], dtype=torch.float32)
                 ye_t = torch.tensor(y_effects[0], dtype=torch.float32)
             else:
                 qt_t = torch.tensor(query_targets, dtype=torch.long)
                 qtime_t = torch.tensor([q / T for q in query_time_idxs], dtype=torch.float32)
                 yt_t = torch.tensor(y_trues, dtype=torch.float32)
+                yo_t = torch.tensor(y_obs_vals, dtype=torch.float32)
                 ye_t = torch.tensor(y_effects, dtype=torch.float32)
 
             samples.append({
                 'X_obs': X_obs_padded,
                 'X_int': X_int_padded,
                 'variable_mask': variable_mask,
-                'intervention_target': torch.tensor(int_target, dtype=torch.long),
+                'intervention_target': torch.tensor(int_target_out, dtype=torch.long),
                 'intervention_type': torch.tensor(0, dtype=torch.long),  # HARD
-                'intervention_value': torch.tensor(int_value, dtype=torch.float32),
+                'intervention_value': torch.tensor(int_value_norm, dtype=torch.float32),
+                'intervention_value_raw': torch.tensor(int_value_raw, dtype=torch.float32),
                 'intervention_time_start': torch.tensor(int_time_idx / T, dtype=torch.float32),
                 'intervention_time_end': torch.tensor(int_time_idx / T, dtype=torch.float32),
                 'query_target': qt_t,
                 'query_time': qtime_t,
                 'Y_true': yt_t,
+                'Y_obs': yo_t,
                 'Y_causal_effect': ye_t,
                 'num_vars': torch.tensor(N, dtype=torch.long),
                 'int_onset_idx': torch.tensor(int_time_idx, dtype=torch.long),
-                'positivity_score': torch.tensor(0.0, dtype=torch.float32),
+                'positivity_score': torch.tensor(positivity_score, dtype=torch.float32),
             })
 
         return self._collate_batch(samples)
@@ -523,7 +631,7 @@ class ExtendedCausalTimePrior:
         Query-level fields are concatenated to (B_total,) with _traj_idx mapping
         each query back to its trajectory.
         """
-        query_keys = {'query_target', 'query_time', 'Y_true', 'Y_causal_effect'}
+        query_keys = {'query_target', 'query_time', 'Y_true', 'Y_obs', 'Y_causal_effect'}
         # Check if any sample has multi-query (tensor with dim > 0 for query fields)
         is_multi = any(s['query_target'].dim() > 0 for s in samples)
 

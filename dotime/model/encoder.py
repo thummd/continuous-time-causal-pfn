@@ -43,9 +43,14 @@ class TemporalEncoder(nn.Module):
         # Per-scalar value embedding (from TempoPFN pattern)
         self.expand_values = nn.Linear(1, embed_size, bias=True)
 
-        # Learnable absolute positional encoding (backward compat fallback)
+        # Learnable absolute positional encoding (backward compat fallback).
+        # Size = max T supported when int_onset_idx is NOT provided. The
+        # relative encoding path (used when int_onset_idx is given — the
+        # default for training and eval) is bounded by context_window and
+        # does NOT depend on this cap. So T=5000 trajectories work fine
+        # as long as int_onset_idx is in the batch.
         self.pos_encoding = nn.Parameter(
-            torch.randn(1, 1024, embed_size) * 0.02  # max T=1024
+            torch.randn(1, 1024, embed_size) * 0.02  # abs-path max T=1024
         )
 
         # Learnable relative positional encoding (distance to intervention)
@@ -142,6 +147,16 @@ class TemporalEncoder(nn.Module):
     def _forward_absolute(self, X_obs, variable_mask):
         """Original forward with absolute positional encoding (backward compat)."""
         B, T, N = X_obs.shape
+
+        # Guardrail: the absolute path is bounded by pos_encoding buffer size.
+        # For T>1024 callers should provide int_onset_idx to use the relative
+        # path (context_window truncation).
+        if T > self.pos_encoding.shape[1]:
+            raise ValueError(
+                f"Absolute encoding path supports T<={self.pos_encoding.shape[1]}; "
+                f"got T={T}. Provide int_onset_idx to use the relative path "
+                f"(truncates to context_window={self.context_window} regardless of T)."
+            )
 
         # Time mask: which timesteps have data (pre-intervention, non-zero)
         time_mask = (X_obs.abs().sum(dim=-1) > 0)  # (B, T)

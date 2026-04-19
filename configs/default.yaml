@@ -18,8 +18,9 @@ model:
 prior:
   n_min: 3
   n_max: 10
-  t_range: [50, 2000]  # longer trajectories for richer SCM dynamics
+  t_range: [50, 200]
   burn_in: 50
+  dynamics_burn_in: 2000  # extra burn-in for rich SCM dynamics (T stays small)
   downstream_prob: 0.7
 
 training:

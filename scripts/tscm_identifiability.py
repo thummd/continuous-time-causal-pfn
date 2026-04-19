@@ -339,6 +339,8 @@ def evaluate_structure(
     multi_step: bool = False,
     query_offsets: list = None,
     max_lag: int = 1,
+    intervention_scale: float = 2.0,
+    positivity_clip: bool = False,
 ):
     """Evaluate model on a specific causal structure.
 
@@ -388,16 +390,18 @@ def evaluate_structure(
         else:
             int_times = [max(0, T_sample - 5)]
 
-        # Sample intervention value from training distribution N(0, 2)
-        # to match CTP's hard intervention sampling
-        int_value = float(torch.randn(1, generator=gen).item() * 2.0)
+        # Sample intervention value from N(0, intervention_scale)
+        int_value = float(torch.randn(1, generator=gen).item() * intervention_scale)
 
-        # Positivity score: how OOD is the intervention relative to observed support?
+        # Positivity score + optional 3σ clipping so eval matches training support.
         int_onset = min(int_times)
         pre_int_vals = X_obs[:int_onset, int_target]
         if pre_int_vals.numel() > 1:
             obs_mu = pre_int_vals.mean().item()
             obs_sigma = max(pre_int_vals.std().item(), 1e-4)
+            if positivity_clip:
+                lo, hi = obs_mu - 3.0 * obs_sigma, obs_mu + 3.0 * obs_sigma
+                int_value = float(np.clip(int_value, lo, hi))
             positivity_score = max(0.0, abs(int_value - obs_mu) / obs_sigma - 3.0)
         else:
             positivity_score = float('nan')
@@ -523,6 +527,12 @@ def main():
                              "Default: results/<ckpt_parent>/tscm_eval.json when --checkpoint is given.")
     parser.add_argument("--bootstrap-n", type=int, default=1000,
                         help="Number of bootstrap resamples for CI estimation (default: 1000)")
+    parser.add_argument("--intervention-scale", type=float, default=2.0,
+                        help="Scale for N(0, scale) intervention values in eval (default: 2.0)")
+    parser.add_argument("--positivity-clip", action="store_true",
+                        help="Clip each intervention value to [obs_mu-3σ, obs_mu+3σ] of the "
+                             "treatment variable's pre-intervention support. Matches training-time "
+                             "positivity_aware mode, ensuring eval and training share support.")
     parser.add_argument("--T", type=int, default=None,
                         help="Fixed trajectory length (default: 50 if --t-range not given)")
     parser.add_argument("--t-range", type=int, nargs=2, default=None,
@@ -582,6 +592,8 @@ def main():
             device=args.device,
             multi_step=args.multi_step, query_offsets=args.query_offsets,
             max_lag=args.max_lag,
+            intervention_scale=args.intervention_scale,
+            positivity_clip=args.positivity_clip,
         )
         all_results[structure.value] = results
 

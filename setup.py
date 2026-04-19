@@ -13,6 +13,7 @@ setup(
         "pyyaml",
         "causalchamber",
         "flash-linear-attention",
+        "wandb",
     ],
     extras_require={
         "analysis": ["statsmodels"],

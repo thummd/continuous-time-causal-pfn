@@ -15,6 +15,12 @@ from dotime.model.do_over_time_pfn import DoOverTimePFN
 from dotime.model.bar_head import calibrate_bar_distribution
 from dotime.data.temporal_dataloader import TemporalInterventionDataLoader
 
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except ImportError:
+    _WANDB_AVAILABLE = False
+
 
 def get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps):
     """Cosine annealing with linear warmup."""
@@ -98,6 +104,7 @@ def train(
     head_type: str = "bar",
     tau_levels: Optional[List[float]] = None,
     target_key: str = "Y_true",
+    obs_only_target: str = "Y_true",
     observational_only: bool = False,
     n_queries: int = 1,
     query_mode: str = "single",
@@ -108,8 +115,50 @@ def train(
     use_lagged_edges: bool = True,
     intervention_scale: float = 2.0,
     causal_mask_mode: str = "full",
+    dynamics_burn_in: int = 0,
+    sim_device: Optional[str] = None,
+    query_offset_range: tuple = (0, 0),
+    early_stop_patience: int = 0,
+    wandb_project: Optional[str] = None,
+    wandb_entity: Optional[str] = None,
+    wandb_run_name: Optional[str] = None,
 ):
     """Full training pipeline for Do-Over-Time-PFN."""
+
+    # Wandb init (silently skipped if project not set or wandb not installed)
+    use_wandb = bool(wandb_project) and _WANDB_AVAILABLE
+    if wandb_project and not _WANDB_AVAILABLE:
+        print("WARNING: wandb_project set but wandb package not installed. Skipping.")
+    if use_wandb:
+        wandb.init(
+            project=wandb_project,
+            entity=wandb_entity,
+            name=wandb_run_name,
+            config={
+                'n_max': n_max, 'embed_size': embed_size, 'n_heads': n_heads,
+                'n_encoder_layers': n_encoder_layers, 'n_cross_attn_heads': n_cross_attn_heads,
+                'n_buckets': n_buckets, 'encoder_backend': encoder_backend,
+                'context_window': context_window,
+                'n_max_prior': n_max_prior, 't_range': list(t_range), 'burn_in': burn_in,
+                'downstream_prob': downstream_prob, 'dynamics_burn_in': dynamics_burn_in,
+                'query_offset_range': list(query_offset_range),
+                'batch_size': batch_size, 'lr': lr, 'weight_decay': weight_decay,
+                'warmup_steps': warmup_steps, 'total_steps': total_steps,
+                'grad_clip': grad_clip, 'eval_every': eval_every,
+                'pinball_weight': pinball_weight, 'head_type': head_type,
+                'target_key': target_key, 'obs_only_target': obs_only_target,
+                'observational_only': observational_only,
+                'n_queries': n_queries, 'query_mode': query_mode,
+                'n_mixer_layers': n_mixer_layers,
+                'intervention_source': intervention_source,
+                'tscm_structure': tscm_structure,
+                'use_lagged_edges': use_lagged_edges,
+                'intervention_scale': intervention_scale,
+                'causal_mask_mode': causal_mask_mode,
+                'early_stop_patience': early_stop_patience,
+                'seed': seed,
+            },
+        )
 
     print("=" * 70)
     print("Do-Over-Time-PFN Training")
@@ -176,7 +225,13 @@ def train(
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
 
     # 4. Training dataloader
+    # Fix 2d: when observational_only, optionally switch training target to Y_obs
+    # so the obs-only model fits the natural continuation rather than the
+    # underspecified "counterfactual without intervention info" task.
+    train_target_key = obs_only_target if observational_only else target_key
     print(f"\n3. Starting training ({total_steps} steps, batch_size={batch_size})...")
+    if observational_only and obs_only_target != target_key:
+        print(f"   Obs-only target override: training on {obs_only_target} (evaluating on {target_key})")
     train_loader = TemporalInterventionDataLoader(
         num_steps=total_steps, batch_size=batch_size,
         n_max=n_max, n_max_prior=n_max_prior,
@@ -185,7 +240,7 @@ def train(
         device=device,
         num_workers=num_workers,
         prefetch=prefetch,
-        target_key=target_key,
+        target_key=train_target_key,
         n_queries=n_queries,
         query_mode=query_mode,
         intervention_source=intervention_source,
@@ -193,6 +248,9 @@ def train(
         use_lagged_edges=use_lagged_edges,
         intervention_scale=intervention_scale,
         causal_mask_mode=causal_mask_mode,
+        dynamics_burn_in=dynamics_burn_in,
+        sim_device=sim_device,
+        query_offset_range=tuple(query_offset_range),
     )
 
     # Eval loader (fixed seed for consistent evaluation)
@@ -207,6 +265,7 @@ def train(
     # 5. Training loop
     model.train()
     best_eval_loss = float('inf')
+    n_evals_since_best = 0
     start_time = time.time()
     running_loss = 0.0
 
@@ -272,6 +331,13 @@ def train(
         if step % 100 == 0:
             step_log_file.flush()
 
+        if use_wandb:
+            wandb.log({
+                'step_loss': loss_val,
+                'y_max': y_max,
+                'lr': lr_now,
+            }, step=step)
+
         # Log + evaluate
         if (step + 1) % eval_every == 0:
             avg_train_loss = running_loss / eval_every
@@ -290,9 +356,19 @@ def train(
                 log_msg += f" | Pinball: {eval_pinball:.4f}"
             print(log_msg)
 
-            # Save best
+            wandb_metrics = {
+                'train_loss': avg_train_loss,
+                'eval_loss': eval_loss,
+                'eval_rmse': eval_rmse,
+                'lr_at_eval': lr_now,
+            }
+            if tau_levels is not None:
+                wandb_metrics['eval_pinball'] = eval_results[2]
+
+            # Save best + early stopping bookkeeping
             if eval_loss < best_eval_loss:
                 best_eval_loss = eval_loss
+                n_evals_since_best = 0
                 os.makedirs(save_dir, exist_ok=True)
                 save_path = os.path.join(save_dir, "do_over_time_pfn_best.pt")
                 torch.save({
@@ -315,10 +391,49 @@ def train(
                     },
                 }, save_path)
 
+                # Log checkpoint as wandb artifact (versioned). Only the latest
+                # "best" is aliased `best`; older best checkpoints remain as
+                # numbered versions for comparison.
+                if use_wandb:
+                    art_name = (wandb_run_name or os.path.basename(save_dir)
+                                or 'do_over_time_pfn') + '_best'
+                    artifact = wandb.Artifact(
+                        name=art_name,
+                        type='model',
+                        description=f'Best checkpoint at step {step+1} '
+                                    f'(eval_loss={eval_loss:.4f})',
+                        metadata={
+                            'step': step + 1,
+                            'eval_loss': eval_loss,
+                            'eval_rmse': eval_rmse,
+                            'head_type': head_type,
+                        },
+                    )
+                    artifact.add_file(save_path, name='do_over_time_pfn_best.pt')
+                    wandb.log_artifact(artifact, aliases=['best', f'step_{step+1}'])
+            else:
+                n_evals_since_best += 1
+
+            wandb_metrics['best_eval_loss'] = best_eval_loss
+            wandb_metrics['n_evals_since_best'] = n_evals_since_best
+            if use_wandb:
+                wandb.log(wandb_metrics, step=step + 1)
+
+            if early_stop_patience > 0 and n_evals_since_best >= early_stop_patience:
+                print(f"   Early stopping at step {step+1} "
+                      f"(no improvement for {n_evals_since_best} evals; "
+                      f"best_eval_loss={best_eval_loss:.4f})")
+                break
+
     total_time = time.time() - start_time
     step_log_file.close()
     print(f"\n4. Training complete! Total time: {total_time:.0f}s")
     print(f"   Per-step losses saved to {step_log_path}")
     print(f"   Best eval loss: {best_eval_loss:.4f}")
+
+    if use_wandb:
+        wandb.summary['best_eval_loss'] = best_eval_loss
+        wandb.summary['total_time_s'] = total_time
+        wandb.finish()
 
     return model

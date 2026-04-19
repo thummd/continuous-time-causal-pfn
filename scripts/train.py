@@ -2,6 +2,7 @@
 """Training entry point for Do-Over-Time-PFN."""
 
 import argparse
+import os
 import yaml
 import torch
 
@@ -41,8 +42,9 @@ def main():
     parser.add_argument("--query-mode", type=str, default="single",
                         choices=["single", "all_pairs"],
                         help="Query mode: 'single' (random) or 'all_pairs' (all outcome vars)")
-    parser.add_argument("--n-mixer-layers", type=int, default=1,
-                        help="Number of stacked cross-attention layers in mixer (1=default, 3=deep)")
+    parser.add_argument("--n-mixer-layers", type=int, default=None,
+                        help="Number of stacked cross-attention layers in mixer. "
+                             "If unset, uses config.model.n_mixer_layers (default 1).")
     parser.add_argument(
         "--intervention-source", type=str, default="prior",
         choices=["prior", "positivity_aware", "observed_discrete", "observed_normal", "observed_uniform", "observed"],
@@ -70,6 +72,33 @@ def main():
                         choices=["full", "interpolation"],
                         help="Causal masking mode: 'full' (zero all vars at t) or "
                              "'interpolation' (restore treatment var A_obs at t)")
+    parser.add_argument("--dynamics-burn-in", type=int, default=None,
+                        help="Extra burn-in steps for SCM dynamics (added to burn_in). "
+                             "Keeps T small while giving SCMs time to establish patterns.")
+    parser.add_argument("--sim-device", type=str, default=None,
+                        help="Device for BatchedTSCMSimulator (cpu | cuda:N). "
+                             "If unset, defaults to the training device. CPU is "
+                             "typically faster for B<=64 due to kernel-launch overhead.")
+    parser.add_argument("--query-offset-range", type=int, nargs=2, default=None,
+                        metavar=("LO", "HI"),
+                        help="Sample query offset uniformly from [LO, HI] per query. "
+                             "offset=0 means query at intervention time. Use (0, 5) to "
+                             "let the model learn propagation through mediators (Fix 3).")
+    parser.add_argument("--obs-only-target", type=str, default="Y_true",
+                        choices=["Y_true", "Y_obs", "Y_causal_effect"],
+                        help="Target key to use when --observational-only is set. "
+                             "'Y_obs' makes obs-only predict the natural continuation "
+                             "(principled test of intervention awareness vs baseline).")
+    parser.add_argument("--early-stop-patience", type=int, default=0,
+                        help="Stop training if eval_loss doesn't improve for N evals. "
+                             "0 = disabled (default).")
+    parser.add_argument("--wandb-project", type=str, default=None,
+                        help="Wandb project name. If unset, wandb logging is disabled.")
+    parser.add_argument("--wandb-entity", type=str, default=None,
+                        help="Wandb entity/team (e.g. dot-pfn). Requires WANDB_API_KEY "
+                             "in environment or prior `wandb login`.")
+    parser.add_argument("--wandb-run-name", type=str, default=None,
+                        help="Custom wandb run name. Defaults to basename of --save-dir.")
     args = parser.parse_args()
 
     # Load config
@@ -119,13 +148,24 @@ def main():
         observational_only=args.observational_only,
         n_queries=args.n_queries,
         query_mode=args.query_mode,
-        n_mixer_layers=args.n_mixer_layers,
+        n_mixer_layers=(args.n_mixer_layers if args.n_mixer_layers is not None
+                        else model_cfg.get("n_mixer_layers", 1)),
         intervention_source=args.intervention_source,
         eval_num_steps=args.eval_num_steps,
         tscm_structure=args.tscm_structure,
         use_lagged_edges=args.tscm_lag,
         intervention_scale=args.intervention_scale,
         causal_mask_mode=args.causal_mask,
+        dynamics_burn_in=(args.dynamics_burn_in if args.dynamics_burn_in is not None
+                          else prior_cfg.get("dynamics_burn_in", 0)),
+        sim_device=args.sim_device,
+        obs_only_target=args.obs_only_target,
+        early_stop_patience=args.early_stop_patience,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
+        wandb_run_name=(args.wandb_run_name
+                        or (os.path.basename(args.save_dir) if args.save_dir else None)),
+        query_offset_range=tuple(args.query_offset_range) if args.query_offset_range else (0, 0),
     )
 
 
