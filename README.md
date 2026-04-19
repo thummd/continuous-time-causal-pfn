@@ -36,13 +36,18 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 3)
+### Current continuous-time module (phases 1 – 4)
 
-End-to-end training pipeline is runnable: config → CLI entry →
-prior → dataloader → model → loss → checkpoint.  89/89 tests pass in
-`tests/`.
+End-to-end **training** pipeline: config → CLI entry → prior →
+dataloader → model → loss → checkpoint.
 
-Quick start:
+End-to-end **zero-shot evaluation** pipeline on real pharmacokinetic
+data (Theophylline): checkpoint → subject batch adapter → model →
+per-subject + aggregate metrics.
+
+110/110 tests pass in `tests/`.
+
+Quick start — train:
 
 ```bash
 PYTHONPATH=. python scripts/ct_train.py \
@@ -51,8 +56,18 @@ PYTHONPATH=. python scripts/ct_train.py \
     --save-dir checkpoints/ct/back_door_cf_regular
 ```
 
+Quick start — evaluate zero-shot on Theophylline:
+
+```bash
+PYTHONPATH=. python scripts/ct_evaluate.py \
+    --checkpoint checkpoints/ct/back_door_cf_regular/continuous_do_over_time_pfn_best.pt \
+    --benchmark theophylline \
+    --save-json results/theoph_zero_shot.json
+```
+
 See `configs/continuous_default.yaml` for the full list of knobs and
-`scripts/ct_train.py --help` for CLI overrides.
+`scripts/ct_train.py --help` / `scripts/ct_evaluate.py --help` for CLI
+overrides.
 
 **Phase 1 — SDE primitives** (verified in `tests/test_continuous_prior.py`
 and `tests/test_continuous_encoder.py`):
@@ -136,10 +151,31 @@ and `tests/test_continuous_encoder.py`):
   `--intervention-kind-probs`, `--intervention-source`, ...), and
   calls `train_continuous`.
 
-### Not yet implemented (phase 4+)
+**Phase 4 — zero-shot Theophylline PK evaluation** (verified in
+`tests/test_continuous_pk_pd.py`):
 
-- PK/PD benchmark loaders (`dotime/data/pk_pd/`) — the subpackage
-  exists but the Theophylline and Warfarin loaders are stubbed.
+- **`dotime.data.pk_pd.theophylline.load_theophylline`** — reads the
+  bundled CSV at `data/pk_pd/theophylline.csv` and returns 12
+  `TheophSubject` records with per-subject times (hours) and
+  concentrations (mg/L). Offline — no network required.
+- **`dotime.data.pk_pd.theophylline_adapter.build_theophylline_batch`** —
+  maps a subject record to the `ContinuousDoOverTimePFN` batch dict.
+  Models dosing as a hard intervention on variable 0 (Dose) with a
+  short absorption window; queries concentration (variable 1) at each
+  post-dose observation time. Supports two normalisation strategies
+  (`peek_target` for zero-shot scale alignment, `fixed` for
+  calibration against an external reference).
+- **`dotime.eval.continuous_pk_eval.evaluate_dataset`** — runs a
+  trained model over all 12 subjects, denormalises predictions back to
+  mg/L, and reports per-subject RMSE / MAE / Pearson r plus aggregate
+  metrics including **lift over a naive mean-concentration baseline**.
+- **`scripts/ct_evaluate.py`** — CLI that loads a checkpoint and
+  writes a human-readable summary and optional JSON results file.
+
+### Not yet implemented (phase 5+)
+
+- Warfarin PK/PD loader (more complex: dose → concentration → INR,
+  multiple dosing regimens).
 - CausalChamber evaluation hook with continuous-time sampling (the
   raw walks data is already sampled at 7-10 Hz continuous).
 - Random-graph continuous prior (analogue of CTP's random-DAG sampler;
