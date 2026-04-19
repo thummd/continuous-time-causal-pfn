@@ -84,6 +84,10 @@ def main():
                         help="Sample query offset uniformly from [LO, HI] per query. "
                              "offset=0 means query at intervention time. Use (0, 5) to "
                              "let the model learn propagation through mediators (Fix 3).")
+    parser.add_argument("--t-range", type=int, nargs=2, default=None,
+                        metavar=("LO", "HI"),
+                        help="Override trajectory length range from config. "
+                             "Longer T means SCM is more settled before intervention.")
     parser.add_argument("--obs-only-target", type=str, default="Y_true",
                         choices=["Y_true", "Y_obs", "Y_causal_effect"],
                         help="Target key to use when --observational-only is set. "
@@ -122,7 +126,7 @@ def main():
         encoder_config=model_cfg.get("encoder"),
         context_window=model_cfg.get("context_window", 200),
         n_max_prior=prior_cfg["n_max"],
-        t_range=tuple(prior_cfg["t_range"]),
+        t_range=tuple(args.t_range) if args.t_range else tuple(prior_cfg["t_range"]),
         burn_in=prior_cfg["burn_in"],
         downstream_prob=prior_cfg["downstream_prob"],
         batch_size=args.batch_size or train_cfg["batch_size"],
