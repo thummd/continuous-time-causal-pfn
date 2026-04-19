@@ -28,13 +28,93 @@ Continuous-time extensions live under `continuous/` subdirectories so that
 they can be cleanly upstreamed into DoT-PFN later:
 
 ```
-dotime/prior/continuous/   -> SDE / OU mechanism samplers, Delta-t schedules
-dotime/model/continuous/   -> Delta-t aware encoder variants
-dotime/data/pk_pd/         -> Theophylline / Warfarin loaders
+dotime/prior/continuous/   -> OU mechanism sampler, ContinuousSCM, Delta-t schedules
+dotime/model/continuous/   -> Fourier time embeddings (Delta-t aware)
+dotime/data/pk_pd/         -> Theophylline / Warfarin loaders (stub)
 paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper/)
 ```
 
 All pre-existing discrete-time code is unchanged.
+
+### Current continuous-time module (phase 1)
+
+Implemented and tested (see `tests/test_continuous_*.py`):
+
+- **`dotime.prior.continuous.OUMechanism`** — single-variable linear-drift
+  Ornstein-Uhlenbeck spec:
+  `dX_v = (-theta_v * X_v + sum_u w_{v,u} * X_u) dt + sigma_v dW_v`.
+  At `dt = 1` Euler-Maruyama recovers the AR(1) form of the discrete-time
+  `batched_tscm.py` mechanism exactly (verified in
+  `test_ar1_equivalence_at_dt_one`).
+- **`dotime.prior.continuous.ContinuousSCM`** — multivariate SCM that
+  integrates a vector of `OUMechanism` on any observation schedule via
+  Euler-Maruyama. Supports:
+  - Hard, soft, and time-varying interventions in an arbitrary time window.
+  - `sample_counterfactual_pair(...)`: shared-noise obs+cf pair (true
+    counterfactual semantics, Pearl's rung 3) — trajectories are
+    identical before the intervention window, diverge only through
+    causal propagation.
+  - `sample_interventional_pair(...)`: independent-noise obs+int pair
+    (population-level interventional, matches existing DoT-PFN semantics).
+- **`dotime.prior.continuous.time_schedule`** — `regular_schedule`,
+  `jittered_schedule`, `exponential_schedule`, and `from_times` for
+  constructing arbitrary observation grids (regular, noisy, or
+  Poisson-irregular).
+- **`dotime.model.continuous.FourierTimeEmbedding`** — fixed-frequency
+  sinusoidal features over a scalar time, projected to the encoder's
+  `embed_size`. Default frequencies span five decades so the embedding
+  is effectively scale-free for typical `dt in [0.01, 10]`.
+- **`dotime.model.continuous.DeltaTEmbedding`** — log-scale wrapper
+  around `FourierTimeEmbedding` for embedding inter-observation gaps.
+- **`dotime.model.continuous.relative_to_intervention`** — helper that
+  re-centers a `(B, T)` time tensor on the intervention onset, matching
+  the existing encoder's relative-positional convention.
+
+### Not yet implemented (phase 2+)
+
+- `ExtendedCausalTimePrior` wrapper that dispatches between discrete
+  and continuous samplers.
+- `TemporalEncoder` variant that consumes `times` / `dts` batch fields
+  and composes `FourierTimeEmbedding` with the existing transformer
+  backbone.
+- `TemporalInterventionDataLoader` integration (batch dict must carry
+  `times: (B, T)` and/or `dts: (B, T-1)`).
+- PK/PD benchmark loaders (`dotime/data/pk_pd/`) — the subpackage exists
+  but the Theophylline and Warfarin loaders are stubbed.
+- Positivity-aware intervention sampling in continuous time.
+- Training recipe for continuous-time prior + encoder.
+
+### Quick example
+
+```python
+import torch
+from dotime.prior.continuous import (
+    ContinuousSCM, ContinuousIntervention, InterventionKind,
+    regular_schedule, exponential_schedule,
+)
+
+# Sample a random 5-variable continuous-time SCM.
+scm = ContinuousSCM.sample_random(
+    n_vars=5,
+    edge_prob=0.3,
+    theta_range=(0.5, 2.0),
+    sigma_range=(0.2, 0.5),
+    generator=torch.Generator().manual_seed(0),
+)
+
+# Regular or irregular observation schedule.
+times, dts = regular_schedule(T=100, dt=0.1)
+# times, dts = exponential_schedule(T=100, rate=10.0, generator=torch.Generator().manual_seed(1))
+
+# Counterfactual pair (shared noise).
+intv = ContinuousIntervention(
+    target=0, t_start=3.0, t_end=6.0, kind=InterventionKind.HARD, value=2.5,
+)
+times, X_obs, X_cf = scm.sample_counterfactual_pair(times, dts, intv)
+# Before t_start: X_obs == X_cf (same noise, same mechanism).
+# Inside window: X_cf[:, 0] clamped to 2.5.
+# After window:  X_cf diverges from X_obs only through causal propagation.
+```
 
 ### LFS checkpoints
 
