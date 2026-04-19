@@ -36,55 +36,119 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phase 1)
+### Current continuous-time module (phases 1 & 2)
 
-Implemented and tested (see `tests/test_continuous_*.py`):
+End-to-end pipeline: prior → dataloader → model → loss → backward is
+working and tested (73/73 tests pass in `tests/`).
+
+**Phase 1 — SDE primitives** (verified in `tests/test_continuous_prior.py`
+and `tests/test_continuous_encoder.py`):
 
 - **`dotime.prior.continuous.OUMechanism`** — single-variable linear-drift
   Ornstein-Uhlenbeck spec:
   `dX_v = (-theta_v * X_v + sum_u w_{v,u} * X_u) dt + sigma_v dW_v`.
   At `dt = 1` Euler-Maruyama recovers the AR(1) form of the discrete-time
-  `batched_tscm.py` mechanism exactly (verified in
-  `test_ar1_equivalence_at_dt_one`).
+  `batched_tscm.py` mechanism exactly.
 - **`dotime.prior.continuous.ContinuousSCM`** — multivariate SCM that
   integrates a vector of `OUMechanism` on any observation schedule via
-  Euler-Maruyama. Supports:
-  - Hard, soft, and time-varying interventions in an arbitrary time window.
-  - `sample_counterfactual_pair(...)`: shared-noise obs+cf pair (true
-    counterfactual semantics, Pearl's rung 3) — trajectories are
-    identical before the intervention window, diverge only through
-    causal propagation.
-  - `sample_interventional_pair(...)`: independent-noise obs+int pair
-    (population-level interventional, matches existing DoT-PFN semantics).
+  Euler-Maruyama. Supports hard / soft / time-varying interventions plus
+  `sample_counterfactual_pair` (shared noise, Pearl rung 3) and
+  `sample_interventional_pair` (independent noise, DoT-PFN-compatible).
 - **`dotime.prior.continuous.time_schedule`** — `regular_schedule`,
-  `jittered_schedule`, `exponential_schedule`, and `from_times` for
-  constructing arbitrary observation grids (regular, noisy, or
-  Poisson-irregular).
-- **`dotime.model.continuous.FourierTimeEmbedding`** — fixed-frequency
-  sinusoidal features over a scalar time, projected to the encoder's
-  `embed_size`. Default frequencies span five decades so the embedding
-  is effectively scale-free for typical `dt in [0.01, 10]`.
-- **`dotime.model.continuous.DeltaTEmbedding`** — log-scale wrapper
-  around `FourierTimeEmbedding` for embedding inter-observation gaps.
-- **`dotime.model.continuous.relative_to_intervention`** — helper that
-  re-centers a `(B, T)` time tensor on the intervention onset, matching
-  the existing encoder's relative-positional convention.
+  `jittered_schedule`, `exponential_schedule`, `from_times`.
+- **`dotime.model.continuous.FourierTimeEmbedding`** / **`DeltaTEmbedding`** —
+  scale-free sinusoidal embeddings over time / log-Δt.
 
-### Not yet implemented (phase 2+)
+**Phase 2 — end-to-end pipeline** (verified in
+`tests/test_continuous_integration.py`):
 
-- `ExtendedCausalTimePrior` wrapper that dispatches between discrete
-  and continuous samplers.
-- `TemporalEncoder` variant that consumes `times` / `dts` batch fields
-  and composes `FourierTimeEmbedding` with the existing transformer
-  backbone.
-- `TemporalInterventionDataLoader` integration (batch dict must carry
-  `times: (B, T)` and/or `dts: (B, T-1)`).
-- PK/PD benchmark loaders (`dotime/data/pk_pd/`) — the subpackage exists
-  but the Theophylline and Warfarin loaders are stubbed.
+- **`dotime.prior.continuous.ContinuousTSCMSampler`** — reuses the 8 named
+  `TSCMStructure` topologies from `dotime.prior.tscm_sampler` (back-door,
+  front-door, IV, RCT, mediator, confounder+mediator, observed /
+  unobserved confounder) with OU mechanisms. Both instantaneous and
+  lagged parent edges from the discrete DAG collapse into the continuous
+  SCM's single parent set, since Euler-Maruyama advances all variables
+  simultaneously on pre-step parent values.
+- **`dotime.prior.continuous.ContinuousExtendedPrior`** — model-ready
+  batch generator (analogue of `ExtendedCausalTimePrior`). Returns the
+  full discrete-time batch dict plus two new fields:
+  - `times: (T,)` absolute observation times.
+  - `dts: (T-1,)` inter-observation gaps.
+  - `t_int_start`, `t_int_end`, `t_query` in absolute time units.
+  Selects between counterfactual and interventional pair semantics via
+  `pair_mode`. Applies the same canonical `A → 0, Y → N-1` permutation
+  as the discrete `TSCMPrior` so downstream evaluation code works
+  unchanged.
+- **`dotime.data.continuous_dataloader.ContinuousTemporalInterventionDataLoader`** —
+  infinite on-the-fly loader (analogue of
+  `TemporalInterventionDataLoader`). Supports background prefetching
+  and per-variable z-score normalisation via the existing
+  `normalize_batch` helper (unchanged for continuous batches).
+- **`dotime.model.continuous.ContinuousTemporalEncoder`** — subclasses
+  `TemporalEncoder`, overriding the forward to replace the learnable
+  `rel_pos_encoding` with `FourierTimeEmbedding(times - t_int_start)`.
+  Truncation to `context_window` pre-intervention observations is
+  identical to the discrete case (index-based, not time-based).
+- **`dotime.model.continuous.ContinuousDoOverTimePFN`** — drop-in
+  variant of `DoOverTimePFN` that swaps the encoder and overrides
+  `encode()` to pass `times` / `t_int_start` / `int_onset_idx` from
+  the batch dict. Everything else — the cross-variable mixer, the
+  output heads, `loss` / `predict` / `forward` — is inherited
+  unchanged.
+
+### Not yet implemented (phase 3+)
+
+- PK/PD benchmark loaders (`dotime/data/pk_pd/`) — the subpackage
+  exists but the Theophylline and Warfarin loaders are stubbed.
 - Positivity-aware intervention sampling in continuous time.
-- Training recipe for continuous-time prior + encoder.
+- Soft + time-varying interventions in `ContinuousExtendedPrior` (only
+  hard interventions are wired through end to end; the SCM itself
+  supports all three kinds).
+- Training recipe / hyperparameter config for continuous-time prior +
+  encoder (base DoT-PFN configs at `configs/` need a CT variant).
+- CausalChamber evaluation hook with continuous-time sampling (the
+  raw walks data is already sampled at 7-10 Hz continuous).
 
-### Quick example
+### Quick example: end-to-end forward + backward
+
+```python
+import torch
+from dotime.data.continuous_dataloader import ContinuousTemporalInterventionDataLoader
+from dotime.model.continuous import ContinuousDoOverTimePFN
+
+loader = ContinuousTemporalInterventionDataLoader(
+    num_steps=100,
+    batch_size=8,
+    tscm_structure="front_door",      # or back_door / instrumental_variable / ...
+    schedule="jittered",              # or regular / exponential
+    dt=1.0,
+    jitter=0.3,
+    pair_mode="counterfactual",       # or interventional
+    t_range=(50, 100),
+    n_max=16,
+    seed=0,
+)
+
+model = ContinuousDoOverTimePFN(
+    n_max=16,
+    embed_size=128,
+    n_encoder_layers=2,
+    head_type="quantile",
+    tau_levels=[0.1, 0.5, 0.9],
+    context_window=64,
+    num_time_frequencies=32,
+)
+opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+for batch in loader:
+    loss = model.loss(batch)    # uses batch["times"], batch["t_int_start"],
+                                # batch["int_onset_idx"] via the CT encoder
+    loss.backward()
+    opt.step()
+    opt.zero_grad()
+```
+
+### SDE primitives (phase 1 standalone)
 
 ```python
 import torch
@@ -93,27 +157,20 @@ from dotime.prior.continuous import (
     regular_schedule, exponential_schedule,
 )
 
-# Sample a random 5-variable continuous-time SCM.
 scm = ContinuousSCM.sample_random(
-    n_vars=5,
-    edge_prob=0.3,
-    theta_range=(0.5, 2.0),
-    sigma_range=(0.2, 0.5),
+    n_vars=5, edge_prob=0.3,
+    theta_range=(0.5, 2.0), sigma_range=(0.2, 0.5),
     generator=torch.Generator().manual_seed(0),
 )
-
-# Regular or irregular observation schedule.
 times, dts = regular_schedule(T=100, dt=0.1)
-# times, dts = exponential_schedule(T=100, rate=10.0, generator=torch.Generator().manual_seed(1))
 
-# Counterfactual pair (shared noise).
 intv = ContinuousIntervention(
     target=0, t_start=3.0, t_end=6.0, kind=InterventionKind.HARD, value=2.5,
 )
 times, X_obs, X_cf = scm.sample_counterfactual_pair(times, dts, intv)
 # Before t_start: X_obs == X_cf (same noise, same mechanism).
-# Inside window: X_cf[:, 0] clamped to 2.5.
-# After window:  X_cf diverges from X_obs only through causal propagation.
+# Inside window:  X_cf[:, 0] clamped to 2.5.
+# After window:   X_cf diverges from X_obs only through causal propagation.
 ```
 
 ### LFS checkpoints

@@ -11,8 +11,14 @@ Public API
     Log-scale embedding of inter-observation gaps.
 :func:`relative_to_intervention`
     Re-center a time tensor on the intervention onset.
+:class:`ContinuousTemporalEncoder`
+    Per-variable encoder with Fourier-time positional embedding.
+:class:`ContinuousDoOverTimePFN`
+    Drop-in :class:`DoOverTimePFN` variant with continuous-time encoder.
 """
 
+from .encoder import ContinuousTemporalEncoder
+from .model import ContinuousDoOverTimePFN
 from .time_embedding import (
     DeltaTEmbedding,
     FourierTimeEmbedding,
@@ -20,6 +26,8 @@ from .time_embedding import (
 )
 
 __all__ = [
+    "ContinuousDoOverTimePFN",
+    "ContinuousTemporalEncoder",
     "DeltaTEmbedding",
     "FourierTimeEmbedding",
     "relative_to_intervention",

@@ -1,9 +1,9 @@
 """Continuous-time extensions to the CausalTimePrior.
 
 This subpackage hosts SDE-based mechanism samplers, Ornstein-Uhlenbeck
-parameterisations, and variable Delta-t scheduling used by the ICML FMSD
-2026 workshop paper.  Discrete-time code in the parent
-:mod:`dotime.prior` package stays untouched.
+parameterisations, variable Delta-t scheduling, and a model-ready batch
+generator used by the ICML FMSD 2026 workshop paper.  Discrete-time
+code in the parent :mod:`dotime.prior` package stays untouched.
 
 Public API
 ----------
@@ -16,6 +16,12 @@ Public API
     pairs via shared noise.
 :class:`ContinuousIntervention`, :class:`InterventionKind`
     Intervention specification consumed by :class:`ContinuousSCM`.
+:class:`ContinuousTSCMSampler`
+    Named :class:`TSCMStructure` topology with OU mechanisms
+    (back-door, front-door, IV, RCT, ...).
+:class:`ContinuousExtendedPrior`
+    Model-ready batch generator (analogue of
+    :class:`ExtendedCausalTimePrior`).
 :mod:`time_schedule`
     Helpers for regular, jittered, and Poisson-irregular observation
     grids.
@@ -26,6 +32,7 @@ from .continuous_scm import (
     ContinuousSCM,
     InterventionKind,
 )
+from .extended_prior import ContinuousExtendedPrior
 from .ou_mechanism import OUMechanism, sample_ou_mechanism
 from .time_schedule import (
     exponential_schedule,
@@ -33,10 +40,13 @@ from .time_schedule import (
     jittered_schedule,
     regular_schedule,
 )
+from .tscm_sampler import ContinuousTSCMSampler
 
 __all__ = [
+    "ContinuousExtendedPrior",
     "ContinuousIntervention",
     "ContinuousSCM",
+    "ContinuousTSCMSampler",
     "InterventionKind",
     "OUMechanism",
     "exponential_schedule",
