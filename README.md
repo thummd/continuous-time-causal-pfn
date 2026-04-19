@@ -1,6 +1,72 @@
-# Do-Over-Time-PFN
+# Continuous-time Causal Prior Fitted Networks (ICML FMSD 2026)
 
-In-context causal effect estimation for temporal data using Prior-Fitted Networks.
+> **This is a private fork of [do-over-time-pfn](https://github.com/thummd/do-over-time-pfn).**
+> It hosts the development for the ICML 2026 *Foundation Models for Structured
+> Data* workshop paper on **continuous-time causal PFNs**. The upstream
+> DoT-PFN repo continues to be the home of the full NeurIPS 2026 submission.
+
+## Fork relationship
+
+| Aspect | DoT-PFN (upstream) | ct-cpfn (this fork) |
+|---|---|---|
+| Target venue | NeurIPS 2026 (full paper) | ICML FMSD 2026 workshop (4-page non-archival) |
+| Scope | Discrete-time temporal causal PFN + identifiability benchmark | Continuous-time extension: SDE prior, Delta-t aware encoder, irregular-sampling real-world eval |
+| GitHub | `thummd/do-over-time-pfn` | `thummd/continuous-time-causal-pfn` |
+| Branch layout | `main`, `dennis` (latest s8) | `main`, `dennis` (mirror), `ct-dev` (workshop work) |
+
+### Remotes
+
+```bash
+git remote -v
+# origin    git@github.com:thummd/continuous-time-causal-pfn.git  (fetch + push)
+# upstream  git@github.com:thummd/do-over-time-pfn.git             (fetch + push)
+```
+
+### Where new code goes
+
+Continuous-time extensions live under `continuous/` subdirectories so that
+they can be cleanly upstreamed into DoT-PFN later:
+
+```
+dotime/prior/continuous/   -> SDE / OU mechanism samplers, Delta-t schedules
+dotime/model/continuous/   -> Delta-t aware encoder variants
+dotime/data/pk_pd/         -> Theophylline / Warfarin loaders
+paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper/)
+```
+
+All pre-existing discrete-time code is unchanged.
+
+### LFS checkpoints
+
+This fork was cloned **without LFS blobs**. The `.gitattributes` LFS
+pointers are present, but the underlying checkpoint files are only stored
+in the upstream DoT-PFN LFS server. If you need a DoT-PFN checkpoint for
+baselines:
+
+```bash
+# One-off pull of specific file from upstream LFS
+git lfs pull upstream --include "checkpoints/s8_*/do_over_time_pfn_best.pt"
+```
+
+New checkpoints produced during continuous-time experiments should be
+committed to this fork's own LFS (omit `lfs.allowincompletepush=true` for
+those commits).
+
+### Syncing with DoT-PFN
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow. In short:
+
+```bash
+git fetch upstream
+git checkout main && git merge upstream/main && git push origin main
+git checkout ct-dev && git merge main   # pull NeurIPS changes into workshop branch
+```
+
+---
+
+## Upstream Do-Over-Time-PFN README
+
+*(Everything below is inherited from DoT-PFN.)*
 
 ## Overview
 
