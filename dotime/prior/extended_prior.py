@@ -34,6 +34,39 @@ def pad_to_max_nodes(X: torch.Tensor, max_nodes: int) -> torch.Tensor:
     return X[:, :max_nodes]
 
 
+def _apply_hidden_mask(
+    X_obs_padded: torch.Tensor,
+    X_int_padded: torch.Tensor,
+    variable_mask: torch.Tensor,
+    hidden_canonical: list,
+) -> None:
+    """Mask out hidden variables in-place after canonical permutation.
+
+    Applies three things, all of which must hold jointly for the hidden
+    variable's trajectory to be invisible to the downstream model:
+
+    1. ``variable_mask[h] = 0`` so the cross-variable mixer's key-padding
+       mask treats the position as padding.
+    2. ``X_obs_padded[:, h] = 0`` so the per-variable temporal encoder
+       sees zero input for the hidden variable. Without this step the
+       encoder still processes the hidden trajectory through its shared
+       weights -- the final ``h * variable_mask`` zeros the *output* but
+       lets gradients from the hidden channel flow back into the encoder
+       parameters, which is a training-data leak.
+    3. Same for ``X_int_padded``. This matters mainly for the Y_true /
+       Y_causal_effect fields the caller extracts later; if the caller
+       ever reads X_int at a hidden position it should get zero.
+
+    ``hidden_canonical`` must be a list of *canonical-order* indices
+    (i.e. already remapped through the canonical permutation if one was
+    applied). All tensors are modified in place.
+    """
+    for h in hidden_canonical:
+        X_obs_padded[:, h] = 0.0
+        X_int_padded[:, h] = 0.0
+        variable_mask[h] = 0.0
+
+
 class TSCMPrior:
     """Drop-in replacement for CausalTimePrior that generates from a single TSCM structure.
 
@@ -241,7 +274,9 @@ class ExtendedCausalTimePrior:
         X_obs_padded = pad_to_max_nodes(X_obs_masked, self.n_max)
         X_int_padded = pad_to_max_nodes(X_int, self.n_max)
 
-        # Variable mask
+        # Variable mask.  Hidden-variable exclusion and hidden-position
+        # zeroing happen AFTER the canonical permutation below so the
+        # mask's indexing matches the permuted X_obs / X_int tensors.
         variable_mask = torch.zeros(self.n_max)
         variable_mask[:N] = 1.0
 
@@ -354,8 +389,7 @@ class ExtendedCausalTimePrior:
 
         # Fix 2c: canonical column reordering (TSCMPrior only). Put treatment A at
         # column 0, outcome Y at column N-1, remaining (covariates/hidden) in between.
-        # Remap intervention_target and the padded tensors; variable_mask is unchanged
-        # because the permutation only reshuffles within the first N (real) slots.
+        # Remap intervention_target and the padded tensors.
         canonical_inv_perm = getattr(self.prior, 'canonical_inv_perm', None)
         if canonical_inv_perm is not None:
             perm = self.prior.canonical_perm  # canonical_idx -> topo_idx
@@ -364,6 +398,15 @@ class ExtendedCausalTimePrior:
             X_obs_padded = X_obs_padded.index_select(dim=1, index=perm_t)
             X_int_padded = X_int_padded.index_select(dim=1, index=perm_t)
             intervention_target = canonical_inv_perm[intervention_target]
+            hidden_vars_topo = getattr(self.prior, 'hidden_vars', [])
+            hidden_canonical = [canonical_inv_perm[h] for h in hidden_vars_topo]
+        else:
+            hidden_canonical = list(getattr(self.prior, 'hidden_vars', []))
+
+        # Hide unobserved variables from the model (variable_mask + X_obs/X_int
+        # zeroing). Must happen AFTER canonical permutation so hidden_canonical
+        # refers to the same columns as the permuted trajectory tensors.
+        _apply_hidden_mask(X_obs_padded, X_int_padded, variable_mask, hidden_canonical)
 
         # Query sampling — aligned with identifiability theory:
         # P(Y_{t+offset} | do(A_t), H_{t-1},...,H_{t-K})
@@ -535,10 +578,11 @@ class ExtendedCausalTimePrior:
             X_obs_padded = pad_to_max_nodes(X_obs_masked, self.n_max)
             X_int_padded = pad_to_max_nodes(X_int, self.n_max)
 
+            # Variable mask -- hidden-variable exclusion and X_obs/X_int
+            # zeroing happen AFTER canonical permutation below so the mask
+            # indexing aligns with the permuted trajectory tensors.
             variable_mask = torch.zeros(self.n_max)
-            for j in range(N):
-                if j not in hidden_vars:
-                    variable_mask[j] = 1.0
+            variable_mask[:N] = 1.0
 
             # Fix 2a: positivity score + normalize intervention_value (topo indices)
             # Use this sample's actual int_value (not the batch's)
@@ -567,6 +611,13 @@ class ExtendedCausalTimePrior:
                 hidden_canonical = [canonical_inv_perm[h] for h in hidden_vars]
             else:
                 hidden_canonical = list(hidden_vars)
+
+            # Hide unobserved variables (variable_mask + X_obs/X_int zeroing).
+            # Must happen AFTER canonical permutation so hidden_canonical
+            # refers to the same columns as the permuted trajectory tensors.
+            _apply_hidden_mask(
+                X_obs_padded, X_int_padded, variable_mask, hidden_canonical,
+            )
 
             # Query targets. If the prior has a canonical outcome (TSCMPrior), pin
             # queries to Y. Otherwise fall back to all non-hidden non-intervention.
