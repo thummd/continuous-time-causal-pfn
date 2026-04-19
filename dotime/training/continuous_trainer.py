@@ -95,6 +95,10 @@ def train_continuous(
     time_max_freq: float = 10.0,
     tau_levels: Optional[List[float]] = None,
     # Prior config
+    prior_mode: str = "tscm",
+    n_min_prior: int = 3,
+    n_max_prior: int = 10,
+    edge_prob: float = 0.3,
     tscm_structure: str = "back_door",
     schedule: str = "regular",
     dt: float = 1.0,
@@ -174,7 +178,13 @@ def train_continuous(
     print("=" * 70)
     print("Continuous-time Do-Over-Time-PFN Training")
     print("=" * 70)
-    print(f"   Structure: {tscm_structure}  |  schedule: {schedule}  |  pair_mode: {pair_mode}")
+    if prior_mode == "random":
+        print(
+            f"   Prior: random-graph (N in [{n_min_prior}, {n_max_prior}], edge_prob={edge_prob})"
+            f"  |  schedule: {schedule}  |  pair_mode: {pair_mode}"
+        )
+    else:
+        print(f"   Prior: {tscm_structure}  |  schedule: {schedule}  |  pair_mode: {pair_mode}")
     print(f"   Intervention kind probs: {intervention_kind_probs}  |  source: {intervention_source}")
 
     # 1. Model
@@ -201,7 +211,11 @@ def train_continuous(
     # 2. Data loaders (train + eval with separate seeds)
     loader_kwargs = dict(
         batch_size=batch_size,
+        prior_mode=prior_mode,
         tscm_structure=tscm_structure,
+        n_min_prior=n_min_prior,
+        n_max_prior=n_max_prior,
+        edge_prob=edge_prob,
         schedule=schedule,
         dt=dt,
         jitter=jitter,

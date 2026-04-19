@@ -53,8 +53,29 @@ def main() -> None:
         help="Path to a continuous_do_over_time_pfn_best.pt file",
     )
     parser.add_argument(
-        "--benchmark", choices=["theophylline"], default="theophylline",
+        "--benchmark", choices=["theophylline", "causal_chamber"], default="theophylline",
         help="Real-world benchmark to evaluate on",
+    )
+    # Chamber-specific flags (ignored for theophylline).
+    parser.add_argument(
+        "--chamber-dataset", type=str, default="lt_walks_v1",
+        help="CausalChamber dataset name (e.g. lt_walks_v1)",
+    )
+    parser.add_argument(
+        "--chamber-root", type=str, default="/tmp/causalchamber",
+        help="Local directory for CausalChamber downloads",
+    )
+    parser.add_argument(
+        "--chamber-query-var", type=str, default="red",
+        help="Which sensor variable to query",
+    )
+    parser.add_argument(
+        "--chamber-max-episodes", type=int, default=None,
+        help="Cap on the number of episodes to evaluate",
+    )
+    parser.add_argument(
+        "--chamber-dt-seconds", type=float, default=0.1,
+        help="Inter-sample spacing in seconds (10 Hz default)",
     )
     parser.add_argument("--device", default=None)
     parser.add_argument(
@@ -74,23 +95,54 @@ def main() -> None:
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     model = _load_model(args.checkpoint, device=device)
-    subjects = load_theophylline()
 
-    result = evaluate_dataset(
-        model,
-        subjects,
-        device=device,
-        n_max=model.temporal_encoder.n_max,
-        absorption_window_hours=args.absorption_window_hours,
-        dose_scale=args.dose_scale,
-    )
+    if args.benchmark == "theophylline":
+        subjects = load_theophylline()
+        result = evaluate_dataset(
+            model,
+            subjects,
+            device=device,
+            n_max=model.temporal_encoder.n_max,
+            absorption_window_hours=args.absorption_window_hours,
+            dose_scale=args.dose_scale,
+        )
+        print(format_summary(result))
+        payload = metrics_to_dict(result)
+    else:
+        # causal_chamber
+        from dotime.data.causal_chamber_ct import load_chamber_episodes
+        from dotime.eval.continuous_chamber_eval import (
+            evaluate_episodes,
+            format_summary as chamber_format_summary,
+            metrics_to_dict as chamber_metrics_to_dict,
+        )
 
-    print(format_summary(result))
+        episodes = load_chamber_episodes(
+            dataset_name=args.chamber_dataset,
+            root=args.chamber_root,
+            max_episodes=args.chamber_max_episodes,
+        )
+        if not episodes:
+            raise SystemExit(
+                f"No intervention episodes found in dataset {args.chamber_dataset!r}. "
+                "Check that the dataset contains actuator changepoints and that "
+                "--chamber-max-episodes isn't set to 0."
+            )
+        result = evaluate_episodes(
+            model,
+            episodes,
+            query_var=args.chamber_query_var,
+            device=device,
+            n_max=model.temporal_encoder.n_max,
+            dt_seconds=args.chamber_dt_seconds,
+        )
+        print(chamber_format_summary(result))
+        payload = chamber_metrics_to_dict(result)
 
     if args.save_json is not None:
         args.save_json.parent.mkdir(parents=True, exist_ok=True)
         with args.save_json.open("w") as f:
-            json.dump(metrics_to_dict(result), f, indent=2)
+            json.dump(payload, f, indent=2)
         print(f"\nWrote metrics to {args.save_json}")
 
 

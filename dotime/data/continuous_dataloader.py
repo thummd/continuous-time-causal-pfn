@@ -35,6 +35,7 @@ import torch
 
 from dotime.data.normalization import normalize_batch
 from dotime.prior.continuous.extended_prior import ContinuousExtendedPrior
+from dotime.prior.continuous.random_sampler import RandomContinuousExtendedPrior
 
 
 class ContinuousTemporalInterventionDataLoader:
@@ -102,7 +103,27 @@ class ContinuousTemporalInterventionDataLoader:
         weight_scale: float = 0.5,
         intervention_value_scale: float = 2.0,
         intervention_window_frac: tuple = (0.1, 0.3),
+        prior_mode: str = "tscm",
+        n_min_prior: int = 3,
+        n_max_prior: int = 10,
+        edge_prob: float = 0.3,
     ) -> None:
+        """Construct the loader.
+
+        ``prior_mode`` switches between a fixed named TSCM structure
+        (default, original behaviour) and a random-graph prior that
+        samples a fresh DAG per trajectory:
+
+        - ``"tscm"``   : use :class:`ContinuousExtendedPrior` with
+          ``tscm_structure``.
+        - ``"random"`` : use :class:`RandomContinuousExtendedPrior` with
+          ``n_min_prior`` / ``n_max_prior`` / ``edge_prob``.
+
+        All other arguments are interpreted the same way in both modes.
+        """
+        if prior_mode not in ("tscm", "random"):
+            raise ValueError(f"invalid prior_mode: {prior_mode!r}")
+
         self.num_steps = num_steps
         self.batch_size = batch_size
         self.normalize = normalize
@@ -111,9 +132,9 @@ class ContinuousTemporalInterventionDataLoader:
         self.target_key = target_key
         self.n_queries = n_queries
         self.query_mode = query_mode
+        self.prior_mode = prior_mode
 
-        self.prior = ContinuousExtendedPrior(
-            tscm_structure=tscm_structure,
+        common_kwargs = dict(
             n_max=n_max,
             t_range=t_range,
             schedule=schedule,
@@ -128,6 +149,19 @@ class ContinuousTemporalInterventionDataLoader:
             weight_scale=weight_scale,
             seed=seed,
         )
+
+        if prior_mode == "random":
+            self.prior = RandomContinuousExtendedPrior(
+                n_min=n_min_prior,
+                n_max_prior=n_max_prior,
+                edge_prob=edge_prob,
+                **common_kwargs,
+            )
+        else:
+            self.prior = ContinuousExtendedPrior(
+                tscm_structure=tscm_structure,
+                **common_kwargs,
+            )
 
     def __len__(self) -> int:
         return self.num_steps

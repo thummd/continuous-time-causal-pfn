@@ -22,6 +22,12 @@ model:
   tau_levels: [0.1, 0.25, 0.5, 0.75, 0.9]
 
 prior:
+  mode: tscm                  # tscm | random
+  # Random-graph mode only:
+  n_min_prior: 3
+  n_max_prior: 10
+  edge_prob: 0.3
+  # TSCM-structured mode only:
   tscm_structure: back_door   # one of: back_door, front_door, instrumental_variable, rct_no_confounding, ...
   schedule: regular           # regular | jittered | exponential
   dt: 1.0                     # Regular / jittered spacing (units match the OU time scale).

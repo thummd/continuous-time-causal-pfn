@@ -45,6 +45,13 @@ def main() -> None:
     parser.add_argument("--n-mixer-layers", type=int, default=None)
 
     # Prior CLI overrides (most useful for ablations)
+    parser.add_argument(
+        "--prior-mode", type=str, default=None, choices=["tscm", "random"],
+        help="tscm: fixed named structure; random: random-graph per trajectory",
+    )
+    parser.add_argument("--n-min-prior", type=int, default=None)
+    parser.add_argument("--n-max-prior", type=int, default=None)
+    parser.add_argument("--edge-prob", type=float, default=None)
     parser.add_argument("--tscm-structure", type=str, default=None)
     parser.add_argument(
         "--schedule", type=str, default=None, choices=["regular", "jittered", "exponential"]
@@ -97,6 +104,10 @@ def main() -> None:
         time_max_freq=m.get("time_max_freq", 10.0),
         tau_levels=m.get("tau_levels"),
         # prior
+        prior_mode=args.prior_mode or p.get("mode", "tscm"),
+        n_min_prior=args.n_min_prior or p.get("n_min_prior", 3),
+        n_max_prior=args.n_max_prior or p.get("n_max_prior", 10),
+        edge_prob=args.edge_prob if args.edge_prob is not None else p.get("edge_prob", 0.3),
         tscm_structure=args.tscm_structure or p["tscm_structure"],
         schedule=args.schedule or p["schedule"],
         dt=args.dt if args.dt is not None else p["dt"],

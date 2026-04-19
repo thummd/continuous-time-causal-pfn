@@ -42,13 +42,47 @@ DoT-PFN behaviour.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
 from dotime.prior.tscm_sampler import TSCMStructure
+
+
+@dataclass
+class _SampledSCMContext:
+    """Everything :meth:`generate_sample` needs to know about the sampled SCM.
+
+    Collecting these in one object lets :class:`ContinuousExtendedPrior`
+    hand off topology-dependent decisions to a subclass hook
+    (:meth:`_sample_scm_context`).  That keeps the random-graph variant
+    from having to duplicate all of ``generate_sample``.
+    """
+
+    scm: object  # ContinuousSCM (forward-ref to avoid circular import)
+    n_vars: int
+    intervention_target_topo: int
+    outcome_var_topo: int
+    hidden_vars_topo: List[int] = field(default_factory=list)
+
+    @property
+    def canonical_perm(self) -> List[int]:
+        """``A -> 0, Y -> N-1, others in between (topological order preserved)``."""
+        middle = [
+            i for i in range(self.n_vars)
+            if i != self.intervention_target_topo and i != self.outcome_var_topo
+        ]
+        return [self.intervention_target_topo] + middle + [self.outcome_var_topo]
+
+    @property
+    def topo_to_canon(self) -> List[int]:
+        """Inverse permutation: ``canon_idx[topo_idx] = canonical index of that topo index``."""
+        inv = [0] * self.n_vars
+        for canon_idx, topo_idx in enumerate(self.canonical_perm):
+            inv[topo_idx] = canon_idx
+        return inv
 
 
 # -------------------------------------------------------- time-varying profiles
@@ -260,34 +294,56 @@ class ContinuousExtendedPrior:
             sigma_range=sigma_range,
             weight_scale=weight_scale,
         )
-        self.hidden_vars = self.sampler.get_hidden_vars()
-
-        # Canonical permutation: A at index 0, Y at index N-1.  Matches
-        # ``TSCMPrior`` so downstream evaluation code can reuse its
-        # index conventions.
-        a_idx_topo = self.sampler.get_intervention_target()
-        y_idx_topo = self.sampler.get_outcome_var()
-        N = self.sampler.n_vars
-        middle = [i for i in range(N) if i != a_idx_topo and i != y_idx_topo]
-        self.canonical_perm = [a_idx_topo] + middle + [y_idx_topo]
 
         self._seed = seed
         self._torch_gen = torch.Generator().manual_seed(seed)
         self._np_rng = np.random.RandomState(seed)
 
+    # ------------------------------------------------------------------ hook
+
+    def _sample_scm_context(self) -> _SampledSCMContext:
+        """Sample one SCM and return its topology-dependent metadata.
+
+        Subclasses override this to plug in a different sampler (e.g. the
+        random-graph :class:`RandomContinuousExtendedPrior`).  The
+        default implementation returns the fixed-TSCM metadata cached on
+        ``self.sampler``.
+        """
+        scm = self.sampler.sample(generator=self._torch_gen)
+        return _SampledSCMContext(
+            scm=scm,
+            n_vars=self.sampler.n_vars,
+            intervention_target_topo=self.sampler.get_intervention_target(),
+            outcome_var_topo=self.sampler.get_outcome_var(),
+            hidden_vars_topo=list(self.sampler.get_hidden_vars()),
+        )
+
     # ------------------------------------------------------------------ helpers
 
     @property
     def n_vars(self) -> int:
+        """Fixed-topology samplers expose a constant; random-graph samplers
+        still expose a useful *upper bound* (``n_max_prior``) via the
+        override in :class:`RandomContinuousExtendedPrior`."""
         return self.sampler.n_vars
+
+    @property
+    def hidden_vars(self) -> List[int]:
+        """Backward-compat accessor -- callers outside ``generate_sample``
+        may still want the fixed-topology hidden variable list.  For
+        random-graph samplers this falls back to an empty list."""
+        if hasattr(self.sampler, "get_hidden_vars"):
+            return list(self.sampler.get_hidden_vars())
+        return []
 
     def sample_T(self) -> int:
         """Sample a trajectory length uniformly from ``t_range``."""
         return int(self._np_rng.randint(self.t_range[0], self.t_range[1] + 1))
 
-    def _permute(self, X: torch.Tensor) -> torch.Tensor:
-        """Apply the canonical topological-order permutation."""
-        return X[:, self.canonical_perm]
+    @staticmethod
+    def _permute(X: torch.Tensor, canonical_perm: List[int]) -> torch.Tensor:
+        """Apply an arbitrary canonical topological-order permutation."""
+        return X[:, canonical_perm]
 
     # ------------------------------------------------------------------ sample
 
@@ -332,14 +388,18 @@ class ContinuousExtendedPrior:
         )
         span = float((times[-1] - times[0]).item())
 
-        # 2. Sample SCM
-        scm = self.sampler.sample(generator=self._torch_gen)
+        # 2. Sample SCM and its topology-dependent metadata via the hook.
+        ctx = self._sample_scm_context()
+        scm = ctx.scm
+        n_vars = ctx.n_vars
+        canonical_perm = ctx.canonical_perm
+        topo_to_canon = ctx.topo_to_canon
 
         # 3. Sample intervention window and kind.  The *value* is
         #    deferred until after we have simulated X_obs so that
         #    positivity-aware clipping can see the pre-intervention
         #    support.
-        a_idx_topo = self.sampler.get_intervention_target()
+        a_idx_topo = ctx.intervention_target_topo
         win_frac = float(self._np_rng.uniform(*self.intervention_window_frac))
         win_len = max(self.dt * 2, win_frac * span)
         earliest_start = times[0].item() + 0.3 * span
@@ -397,11 +457,8 @@ class ContinuousExtendedPrior:
         X_int = X_int_raw
 
         # 8. Apply canonical permutation (A -> 0, Y -> N-1, ...)
-        X_obs = self._permute(X_obs)
-        X_int = self._permute(X_int)
-        topo_to_canon = [0] * self.n_vars
-        for canon_idx, topo_idx in enumerate(self.canonical_perm):
-            topo_to_canon[topo_idx] = canon_idx
+        X_obs = self._permute(X_obs, canonical_perm)
+        X_int = self._permute(X_int, canonical_perm)
         intervention_target_canon = topo_to_canon[a_idx_topo]
 
         # 9. Causal masking: zero out post-intervention observations
@@ -412,7 +469,7 @@ class ContinuousExtendedPrior:
         X_obs_padded = _pad_to_max_nodes(X_obs_masked, self.n_max)
         X_int_padded = _pad_to_max_nodes(X_int, self.n_max)
         variable_mask = torch.zeros(self.n_max)
-        variable_mask[: self.n_vars] = 1.0
+        variable_mask[:n_vars] = 1.0
 
         # 9. Sample queries (variable, time) pairs.  Query time defaults
         #    to the intervention window midpoint offset by a small jitter
@@ -423,6 +480,7 @@ class ContinuousExtendedPrior:
             query_mode=query_mode,
             int_onset_idx=int_onset_idx,
             intervention_target_canon=intervention_target_canon,
+            ctx=ctx,
         )
         query_time_abs = times[query_time_idx]
         y_true = X_int[query_time_idx, query_target_idx]
@@ -440,7 +498,7 @@ class ContinuousExtendedPrior:
             "X_obs": X_obs_padded,
             "X_int": X_int_padded,
             "variable_mask": variable_mask,
-            "num_vars": torch.tensor(self.n_vars),
+            "num_vars": torch.tensor(n_vars),
             # Schedule (new for continuous-time)
             "times": times,
             "dts": dts,
@@ -554,6 +612,7 @@ class ContinuousExtendedPrior:
         query_mode: str,
         int_onset_idx: int,
         intervention_target_canon: int,
+        ctx: _SampledSCMContext,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return ``(query_target_idx, query_time_idx)`` both shape ``(n_queries,)``.
 
@@ -563,10 +622,8 @@ class ContinuousExtendedPrior:
         The intervention target itself is allowed as a query target so
         the model also learns the direct effect of ``do(A := c)`` on A.
         """
-        observable_vars = [
-            v for v in range(self.n_vars)
-            if v not in [self._canonical_hidden(h) for h in self.hidden_vars]
-        ]
+        hidden_canon = {ctx.topo_to_canon[h] for h in ctx.hidden_vars_topo}
+        observable_vars = [v for v in range(ctx.n_vars) if v not in hidden_canon]
 
         t_lo = int_onset_idx
         t_hi = max(int_onset_idx + 1, T - 1)
@@ -593,13 +650,6 @@ class ContinuousExtendedPrior:
                 dtype=torch.long,
             )
         return targets_idx, times_idx
-
-    def _canonical_hidden(self, topo_idx: int) -> int:
-        """Map a topological-order hidden-variable index to canonical order."""
-        topo_to_canon = [0] * self.n_vars
-        for canon_idx, t_idx in enumerate(self.canonical_perm):
-            topo_to_canon[t_idx] = canon_idx
-        return topo_to_canon[topo_idx]
 
     # ------------------------------------------------------------------ batch
 

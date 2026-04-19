@@ -34,6 +34,10 @@ from .continuous_scm import (
 )
 from .extended_prior import ContinuousExtendedPrior
 from .ou_mechanism import OUMechanism, sample_ou_mechanism
+from .random_sampler import (
+    RandomContinuousExtendedPrior,
+    RandomContinuousSCMSampler,
+)
 from .time_schedule import (
     exponential_schedule,
     from_times,
@@ -49,6 +53,8 @@ __all__ = [
     "ContinuousTSCMSampler",
     "InterventionKind",
     "OUMechanism",
+    "RandomContinuousExtendedPrior",
+    "RandomContinuousSCMSampler",
     "exponential_schedule",
     "from_times",
     "jittered_schedule",

@@ -36,16 +36,22 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 4)
+### Current continuous-time module (phases 1 – 5)
 
 End-to-end **training** pipeline: config → CLI entry → prior →
-dataloader → model → loss → checkpoint.
+dataloader → model → loss → checkpoint.  The prior supports both
+**named TSCM structures** (back_door, front_door, IV, ...) and a
+**random-graph** continuous-time prior (variable N, random DAG, random
+(A, Y) roles).
 
-End-to-end **zero-shot evaluation** pipeline on real pharmacokinetic
-data (Theophylline): checkpoint → subject batch adapter → model →
-per-subject + aggregate metrics.
+End-to-end **zero-shot evaluation** pipeline on two real-world
+benchmarks:
+- **Theophylline** (pharmacokinetics, 12 subjects × 11 irregular PK
+  observations).
+- **CausalChamber** (~10 Hz physical-system walks with known actuator
+  interventions).
 
-110/110 tests pass in `tests/`.
+135/135 tests pass in `tests/`.
 
 Quick start — train:
 
@@ -56,6 +62,17 @@ PYTHONPATH=. python scripts/ct_train.py \
     --save-dir checkpoints/ct/back_door_cf_regular
 ```
 
+Quick start — train on a random-graph prior:
+
+```bash
+PYTHONPATH=. python scripts/ct_train.py \
+    --config configs/continuous_default.yaml \
+    --prior-mode random \
+    --n-min-prior 3 --n-max-prior 8 --edge-prob 0.3 \
+    --total-steps 5000 \
+    --save-dir checkpoints/ct/random_graph
+```
+
 Quick start — evaluate zero-shot on Theophylline:
 
 ```bash
@@ -63,6 +80,18 @@ PYTHONPATH=. python scripts/ct_evaluate.py \
     --checkpoint checkpoints/ct/back_door_cf_regular/continuous_do_over_time_pfn_best.pt \
     --benchmark theophylline \
     --save-json results/theoph_zero_shot.json
+```
+
+Quick start — evaluate zero-shot on CausalChamber:
+
+```bash
+PYTHONPATH=. python scripts/ct_evaluate.py \
+    --checkpoint checkpoints/ct/random_graph/continuous_do_over_time_pfn_best.pt \
+    --benchmark causal_chamber \
+    --chamber-dataset lt_walks_v1 \
+    --chamber-query-var red \
+    --chamber-max-episodes 50 \
+    --save-json results/chamber_zero_shot.json
 ```
 
 See `configs/continuous_default.yaml` for the full list of knobs and
@@ -172,14 +201,44 @@ and `tests/test_continuous_encoder.py`):
 - **`scripts/ct_evaluate.py`** — CLI that loads a checkpoint and
   writes a human-readable summary and optional JSON results file.
 
-### Not yet implemented (phase 5+)
+**Phase 5 — random-graph prior + CausalChamber evaluation** (verified
+in `tests/test_continuous_phase5.py`):
+
+- **`dotime.prior.continuous.RandomContinuousSCMSampler`** — samples a
+  fresh :class:`ContinuousSCM` per trajectory with random N in
+  ``[n_min, n_max_prior]``, Erdos-Renyi edges over the topological
+  order, and per-sample (A, Y) roles.  Analogous to CausalTimePrior's
+  random-graph path in the discrete-time pipeline.
+- **`dotime.prior.continuous.RandomContinuousExtendedPrior`** —
+  drop-in replacement for :class:`ContinuousExtendedPrior` that plugs
+  the random sampler into the existing generate_sample contract.
+  :class:`ContinuousExtendedPrior` was refactored to expose a
+  ``_sample_scm_context`` hook so both samplers share the
+  schedule / intervention / query logic.
+- **`--prior-mode random`** on the training CLI and
+  ``prior.mode: random`` in `configs/continuous_default.yaml` switch
+  the dataloader between named-TSCM and random-graph training.
+- **`dotime.data.causal_chamber_ct.build_causal_chamber_batch`** —
+  thin adapter over :class:`CausalChamberLoader` episodes.  Stitches
+  ``X_obs + X_post`` into a single trajectory, lays ``times`` on a
+  uniform ``dt_seconds`` grid (default 10 Hz), sets
+  ``int_onset_idx`` at the changepoint, and emits a batch dict
+  compatible with :class:`ContinuousDoOverTimePFN`.
+- **`dotime.eval.continuous_chamber_eval.evaluate_episodes`** — runs
+  the model on a list of chamber episodes, denormalises predictions
+  back to raw sensor units, reports per-episode + aggregate RMSE /
+  MAE / Pearson r, and computes **lift over a naive last-value
+  baseline**.
+- **`scripts/ct_evaluate.py --benchmark causal_chamber`** — CLI entry
+  that loads CausalChamber data via ``load_chamber_episodes`` and runs
+  zero-shot evaluation with the same output format as Theophylline.
+
+### Not yet implemented (phase 6+)
 
 - Warfarin PK/PD loader (more complex: dose → concentration → INR,
   multiple dosing regimens).
-- CausalChamber evaluation hook with continuous-time sampling (the
-  raw walks data is already sampled at 7-10 Hz continuous).
-- Random-graph continuous prior (analogue of CTP's random-DAG sampler;
-  phase 2 is restricted to named TSCM structures).
+- Hidden variables in the random-graph prior (currently all nodes are
+  observed).
 - Bar-distribution head for continuous-time (phase 3 is quantile only).
 
 ### Quick example: end-to-end training (Python API)
