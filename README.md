@@ -36,7 +36,7 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 9)
+### Current continuous-time module (phases 1 – 10)
 
 End-to-end **training** pipeline: config → CLI entry → prior →
 dataloader → model → loss → checkpoint.  The prior supports both
@@ -58,7 +58,7 @@ benchmarks:
 - **CausalChamber** (~10 Hz physical-system walks with known actuator
   interventions).
 
-243/243 tests pass in `tests/`.
+261/261 tests pass in `tests/`.
 
 Quick start — train:
 
@@ -396,13 +396,66 @@ in `tests/test_continuous_phase5.py`):
   - Sticky transition matrix diagonal mean 0.9 (matches the
     theoretical ``9/(9+0.5+0.5)``).
 
-### Not yet implemented (phase 10+)
+**Phase 10 — nonlinear neural drifts** (verified in
+`tests/test_continuous_phase10.py`):
+
+- **`NeuralDriftMechanism`** in
+  ``dotime.prior.continuous.neural_drift_mechanism`` — a drop-in
+  alternative to ``OUMechanism`` whose drift is
+  ``-theta * X_v + out_scale * tanh(W2 tanh(W1 [X_v, X_Pa] + b1) + b2)``.
+  The explicit ``-theta * X_v`` term keeps trajectories bounded even
+  with randomly-initialised MLP weights; the outer ``tanh`` keeps the
+  MLP contribution in ``[-out_scale, out_scale]``.  No ``nn.Module`` is
+  registered, so the mechanism pickles cleanly for multi-process
+  dataloaders.
+- **`sample_neural_drift_mechanism(parents, ...)`** — same hyperprior
+  surface as ``sample_ou_mechanism`` (``theta_range``, ``sigma_range``,
+  ``weight_scale``) plus ``out_scale_range`` and ``hidden_dim``.
+  Xavier-style initialisation ``W ~ N(0, ws / sqrt(fan_in))`` with
+  biases ``N(0, 0.1)`` so the nonlinearity is active from step 1.
+- **`ContinuousSCM.sample_random`** gained ``mechanism_kind``
+  (``"linear"`` / ``"neural"`` / ``"mixed"``), ``p_neural``,
+  ``neural_hidden_dim``, and ``neural_out_scale_range`` arguments.  In
+  ``"mixed"`` mode each variable independently uses a neural drift with
+  probability ``p_neural`` and an OU drift otherwise.  Defaults
+  preserve Phase 1 behaviour (``linear``, ``p_neural=0``).
+- **`RandomContinuousSCMSampler`** and
+  ``RandomContinuousExtendedPrior`` forward the same four knobs, and
+  ``ContinuousTemporalInterventionDataLoader`` propagates them to the
+  prior.
+- **Plumbing**: new ``--mechanism-kind``, ``--p-neural``,
+  ``--neural-hidden-dim`` CLI flags on ``scripts/ct_train.py``, new
+  ``prior.mechanism_kind`` / ``prior.p_neural`` /
+  ``prior.neural_hidden_dim`` / ``prior.neural_out_scale_range`` keys
+  in ``configs/continuous_default.yaml``.
+- **Graceful reduction**: when all MLP weights equal zero the
+  mechanism exactly recovers a parent-free mean-reverting OU drift, so
+  Phase 10 is a strict superset of Phase 1 (verified by
+  ``test_neural_drift_reduces_to_pure_mean_reversion_at_zero_weights``).
+
+Quick start — train with a mixed linear/neural drift prior:
+
+```bash
+PYTHONPATH=. python scripts/ct_train.py \
+    --config configs/continuous_default.yaml \
+    --prior-mode random \
+    --mechanism-kind mixed \
+    --p-neural 0.5 \
+    --neural-hidden-dim 8 \
+    --total-steps 5000 \
+    --save-dir checkpoints/ct/random_neural_mixed
+```
+
+### Not yet implemented (phase 11+)
 
 - DREAM4 (or similar) in-silico gene-regulatory-network benchmark as
   a third synthetic-but-realistic eval dataset.
 - GatedDeltaProduct continuous-time encoder backend (currently only
   the Transformer backend is wired through the `times` / `t_int_start`
   path end to end).
+- Nonlinear drifts inside regime-switching SCMs (Phase 8 regimes still
+  use linear OU within each regime; composing Phase 10 × Phase 8 is
+  straightforward but not wired yet).
 
 ### Quick example: end-to-end training (Python API)
 

@@ -33,6 +33,10 @@ from .continuous_scm import (
     InterventionKind,
 )
 from .extended_prior import ContinuousExtendedPrior
+from .neural_drift_mechanism import (
+    NeuralDriftMechanism,
+    sample_neural_drift_mechanism,
+)
 from .ou_mechanism import OUMechanism, sample_ou_mechanism
 from .random_sampler import (
     RandomContinuousExtendedPrior,
@@ -57,6 +61,7 @@ __all__ = [
     "ContinuousSCM",
     "ContinuousTSCMSampler",
     "InterventionKind",
+    "NeuralDriftMechanism",
     "OUMechanism",
     "RandomContinuousExtendedPrior",
     "RandomContinuousSCMSampler",
@@ -64,6 +69,7 @@ __all__ = [
     "from_times",
     "jittered_schedule",
     "regular_schedule",
+    "sample_neural_drift_mechanism",
     "sample_ou_mechanism",
     "sample_sticky_transition_matrix",
 ]

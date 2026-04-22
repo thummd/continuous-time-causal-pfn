@@ -32,6 +32,10 @@ prior:
   hidden_prob: 0.0            # 0.0 = all nodes observed; >0 hides non-(A,Y) nodes i.i.d.
   regime_prob: 0.0            # Fraction of random-graph samples drawn from a regime-switching SCM.
   regime_count_range: [2, 3]  # Uniform prior on the number of regimes R per regime-switching sample.
+  mechanism_kind: linear      # linear (OU, default) | neural (small MLP drift) | mixed.
+  p_neural: 0.0               # Per-variable neural-drift probability when mechanism_kind == mixed.
+  neural_hidden_dim: 8        # Hidden width of the MLP drift.
+  neural_out_scale_range: [0.5, 2.0]  # Uniform prior on the MLP output gain.
   # TSCM-structured mode only:
   tscm_structure: back_door   # one of: back_door, front_door, instrumental_variable, rct_no_confounding, ...
   schedule: regular           # regular | jittered | exponential

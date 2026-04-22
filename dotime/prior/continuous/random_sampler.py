@@ -105,6 +105,10 @@ class RandomContinuousSCMSampler:
         regime_count_range: tuple = (2, 3),
         sticky_alpha: float = 9.0,
         other_alpha: float = 0.5,
+        mechanism_kind: str = "linear",
+        p_neural: float = 0.0,
+        neural_hidden_dim: int = 8,
+        neural_out_scale_range: tuple = (0.5, 2.0),
         seed: int = 0,
     ) -> None:
         if not 2 <= n_min <= n_max_prior:
@@ -123,6 +127,13 @@ class RandomContinuousSCMSampler:
                 f"regime_count_range must be (lo, hi) with 1 <= lo <= hi, "
                 f"got {regime_count_range}"
             )
+        if mechanism_kind not in ("linear", "neural", "mixed"):
+            raise ValueError(
+                f"mechanism_kind must be 'linear', 'neural', or 'mixed'; "
+                f"got {mechanism_kind!r}"
+            )
+        if not 0.0 <= p_neural <= 1.0:
+            raise ValueError(f"p_neural must be in [0, 1], got {p_neural}")
 
         self.n_min = int(n_min)
         self.n_max_prior = int(n_max_prior)
@@ -135,6 +146,10 @@ class RandomContinuousSCMSampler:
         self.regime_count_range = tuple(regime_count_range)
         self.sticky_alpha = float(sticky_alpha)
         self.other_alpha = float(other_alpha)
+        self.mechanism_kind = str(mechanism_kind)
+        self.p_neural = float(p_neural)
+        self.neural_hidden_dim = int(neural_hidden_dim)
+        self.neural_out_scale_range = tuple(neural_out_scale_range)
 
         self._torch_gen = torch.Generator().manual_seed(int(seed))
         self._np_rng = np.random.RandomState(int(seed))
@@ -193,6 +208,10 @@ class RandomContinuousSCMSampler:
                 theta_range=self.theta_range,
                 sigma_range=self.sigma_range,
                 weight_scale=self.weight_scale,
+                mechanism_kind=self.mechanism_kind,
+                p_neural=self.p_neural,
+                neural_hidden_dim=self.neural_hidden_dim,
+                neural_out_scale_range=self.neural_out_scale_range,
                 generator=self._torch_gen,
             )
 
@@ -237,6 +256,10 @@ class RandomContinuousExtendedPrior(ContinuousExtendedPrior):
         regime_count_range: tuple = (2, 3),
         sticky_alpha: float = 9.0,
         other_alpha: float = 0.5,
+        mechanism_kind: str = "linear",
+        p_neural: float = 0.0,
+        neural_hidden_dim: int = 8,
+        neural_out_scale_range: tuple = (0.5, 2.0),
         tscm_structure_placeholder: str = "rct_no_confounding",
         **kwargs,
     ) -> None:
@@ -257,6 +280,10 @@ class RandomContinuousExtendedPrior(ContinuousExtendedPrior):
             regime_count_range=regime_count_range,
             sticky_alpha=sticky_alpha,
             other_alpha=other_alpha,
+            mechanism_kind=mechanism_kind,
+            p_neural=p_neural,
+            neural_hidden_dim=neural_hidden_dim,
+            neural_out_scale_range=neural_out_scale_range,
             seed=self._seed,
         )
 

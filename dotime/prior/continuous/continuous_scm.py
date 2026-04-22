@@ -35,7 +35,13 @@ from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 import torch
 
+from .neural_drift_mechanism import (
+    NeuralDriftMechanism,
+    sample_neural_drift_mechanism,
+)
 from .ou_mechanism import OUMechanism, sample_ou_mechanism
+
+MechanismLike = Union[OUMechanism, NeuralDriftMechanism]
 
 
 class InterventionKind(Enum):
@@ -105,7 +111,7 @@ class ContinuousSCM:
 
     def __init__(
         self,
-        mechanisms: Sequence[OUMechanism],
+        mechanisms: Sequence[MechanismLike],
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float32,
     ) -> None:
@@ -133,6 +139,10 @@ class ContinuousSCM:
         theta_range: tuple = (0.5, 2.0),
         sigma_range: tuple = (0.2, 0.8),
         weight_scale: float = 0.8,
+        mechanism_kind: str = "linear",
+        p_neural: float = 0.0,
+        neural_hidden_dim: int = 8,
+        neural_out_scale_range: tuple = (0.5, 2.0),
         generator: Optional[torch.Generator] = None,
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float32,
@@ -142,30 +152,67 @@ class ContinuousSCM:
         A variable ``v`` can have any earlier variable ``u < v`` as a
         parent with probability ``edge_prob`` (this is a topological
         ordering and guarantees acyclicity in the lagged graph too).
-        Mechanism parameters are drawn by
-        :func:`sample_ou_mechanism`.
+
+        Mechanism family per variable is controlled by
+        ``mechanism_kind``:
+
+        - ``"linear"`` (default, Phase 1 behaviour): every mechanism is
+          a linear-drift :class:`OUMechanism`.
+        - ``"neural"``: every mechanism is a small-MLP
+          :class:`NeuralDriftMechanism` (Phase 10).
+        - ``"mixed"``: each mechanism is independently neural with
+          probability ``p_neural`` and linear otherwise.
         """
         if not 0.0 <= edge_prob <= 1.0:
             raise ValueError(f"edge_prob must be in [0, 1], got {edge_prob}")
+        if mechanism_kind not in ("linear", "neural", "mixed"):
+            raise ValueError(
+                f"mechanism_kind must be 'linear', 'neural', or 'mixed'; "
+                f"got {mechanism_kind!r}"
+            )
+        if not 0.0 <= p_neural <= 1.0:
+            raise ValueError(f"p_neural must be in [0, 1], got {p_neural}")
 
-        mechs: List[OUMechanism] = []
+        mechs: List[MechanismLike] = []
         for v in range(n_vars):
             parents: List[int] = []
             if v > 0:
                 mask = torch.empty(v, device=device, dtype=dtype)
                 mask.uniform_(0.0, 1.0, generator=generator)
                 parents = [int(u) for u in range(v) if mask[u] < edge_prob]
-            mechs.append(
-                sample_ou_mechanism(
-                    parents=parents,
-                    theta_range=theta_range,
-                    sigma_range=sigma_range,
-                    weight_scale=weight_scale,
-                    generator=generator,
-                    device=device,
-                    dtype=dtype,
+
+            use_neural = mechanism_kind == "neural"
+            if mechanism_kind == "mixed" and p_neural > 0.0:
+                coin = torch.empty(1, device=device, dtype=dtype)
+                coin.uniform_(0.0, 1.0, generator=generator)
+                use_neural = bool(coin.item() < p_neural)
+
+            if use_neural:
+                mechs.append(
+                    sample_neural_drift_mechanism(
+                        parents=parents,
+                        theta_range=theta_range,
+                        sigma_range=sigma_range,
+                        out_scale_range=neural_out_scale_range,
+                        hidden_dim=neural_hidden_dim,
+                        weight_scale=weight_scale,
+                        generator=generator,
+                        device=device,
+                        dtype=dtype,
+                    )
                 )
-            )
+            else:
+                mechs.append(
+                    sample_ou_mechanism(
+                        parents=parents,
+                        theta_range=theta_range,
+                        sigma_range=sigma_range,
+                        weight_scale=weight_scale,
+                        generator=generator,
+                        device=device,
+                        dtype=dtype,
+                    )
+                )
         return cls(mechs, device=device, dtype=dtype)
 
     # ------------------------------------------------------------------ helpers

@@ -76,6 +76,22 @@ def main() -> None:
         "--regime-count-range", type=int, nargs=2, default=None, metavar=("LO", "HI"),
         help="Uniform prior on the number of regimes R in [LO, HI].",
     )
+    parser.add_argument(
+        "--mechanism-kind", type=str, default=None,
+        choices=["linear", "neural", "mixed"],
+        help="Per-variable drift family. 'linear' = OU (default). "
+             "'neural' = small MLP. 'mixed' = Bernoulli(p_neural) per "
+             "variable, OU otherwise. Random-graph prior only.",
+    )
+    parser.add_argument(
+        "--p-neural", type=float, default=None,
+        help="Fraction of variables drawn with a neural drift when "
+             "mechanism_kind='mixed'.",
+    )
+    parser.add_argument(
+        "--neural-hidden-dim", type=int, default=None,
+        help="Hidden width of the MLP drift (default 8).",
+    )
     parser.add_argument("--tscm-structure", type=str, default=None)
     parser.add_argument(
         "--schedule", type=str, default=None, choices=["regular", "jittered", "exponential"]
@@ -141,6 +157,10 @@ def main() -> None:
             if args.regime_count_range is not None
             else tuple(p.get("regime_count_range", [2, 3]))
         ),
+        mechanism_kind=args.mechanism_kind or p.get("mechanism_kind", "linear"),
+        p_neural=args.p_neural if args.p_neural is not None else p.get("p_neural", 0.0),
+        neural_hidden_dim=args.neural_hidden_dim or p.get("neural_hidden_dim", 8),
+        neural_out_scale_range=tuple(p.get("neural_out_scale_range", [0.5, 2.0])),
         tscm_structure=args.tscm_structure or p["tscm_structure"],
         schedule=args.schedule or p["schedule"],
         dt=args.dt if args.dt is not None else p["dt"],

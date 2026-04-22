@@ -112,6 +112,10 @@ class ContinuousTemporalInterventionDataLoader:
         regime_count_range: tuple = (2, 3),
         sticky_alpha: float = 9.0,
         other_alpha: float = 0.5,
+        mechanism_kind: str = "linear",
+        p_neural: float = 0.0,
+        neural_hidden_dim: int = 8,
+        neural_out_scale_range: tuple = (0.5, 2.0),
     ) -> None:
         """Construct the loader.
 
@@ -165,6 +169,10 @@ class ContinuousTemporalInterventionDataLoader:
                 regime_count_range=regime_count_range,
                 sticky_alpha=sticky_alpha,
                 other_alpha=other_alpha,
+                mechanism_kind=mechanism_kind,
+                p_neural=p_neural,
+                neural_hidden_dim=neural_hidden_dim,
+                neural_out_scale_range=neural_out_scale_range,
                 **common_kwargs,
             )
         else:
