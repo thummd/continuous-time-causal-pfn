@@ -42,6 +42,114 @@ from .continuous_scm import (
 )
 
 
+def _sample_gamma_seeded(
+    alphas: torch.Tensor,
+    generator: torch.Generator,
+    max_iters: int = 100,
+) -> torch.Tensor:
+    """Element-wise seeded Gamma(alpha_i, 1) samples via Marsaglia-Tsang.
+
+    Uses the Marsaglia-Tsang (2000) rejection algorithm for
+    ``alpha >= 1`` combined with the Gamma shape-augmentation identity
+    ``Gamma(a) = Gamma(a + 1) * U^{1/a}`` for ``a < 1``.  Only
+    :meth:`torch.Tensor.normal_` and :meth:`torch.Tensor.uniform_` --
+    both of which honour a :class:`torch.Generator` -- are used as
+    entropy sources, so the output is bit-exact reproducible under a
+    seeded generator.  This replaces the Wilson-Hilferty approximation
+    that was used before phase 9, which was visibly biased for small
+    concentrations (the ``other_alpha=0.5`` off-diagonal default of
+    the sticky-transition prior).
+
+    Parameters
+    ----------
+    alphas : torch.Tensor
+        Any shape; concentration parameters (must all be strictly
+        positive).
+    generator : torch.Generator
+        RNG used for every internal Normal / Uniform draw.
+    max_iters : int
+        Safety cap on the rejection-loop iterations.  Acceptance rate
+        per iteration for Marsaglia-Tsang is typically > 0.99 even at
+        ``alpha = 1``, so hitting the cap indicates a numerical issue
+        rather than an extreme rejection rate.
+
+    Returns
+    -------
+    torch.Tensor
+        Same shape / dtype / device as ``alphas``; Gamma samples.
+    """
+    if (alphas <= 0).any():
+        raise ValueError("all concentrations must be > 0")
+
+    orig_alphas = alphas
+    # Shape augmentation for alpha < 1: sample from Gamma(alpha + 1), then
+    # multiply by U^(1/alpha).
+    low_mask = alphas < 1
+    a_shift = torch.where(low_mask, alphas + 1.0, alphas)
+
+    # Marsaglia-Tsang constants
+    d = a_shift - 1.0 / 3.0
+    c = 1.0 / torch.sqrt(9.0 * d)
+
+    out = torch.empty_like(alphas)
+    done = torch.zeros_like(alphas, dtype=torch.bool)
+
+    for _ in range(max_iters):
+        if bool(done.all().item()):
+            break
+        z = torch.empty_like(alphas)
+        u = torch.empty_like(alphas)
+        z.normal_(mean=0.0, std=1.0, generator=generator)
+        u.uniform_(0.0, 1.0, generator=generator)
+
+        v = (1.0 + c * z) ** 3  # can be negative when 1 + c*z < 0
+        # ``torch.log(v)`` of a negative input produces NaN, which would
+        # poison the accept mask; we compute on the clamped-positive
+        # version and zero out rejections via the ``v > 0`` gate.
+        v_safe = torch.clamp(v, min=1e-30)
+        log_u = torch.log(torch.clamp(u, min=1e-30))
+        log_v_safe = torch.log(v_safe)
+        accept_cond = log_u < 0.5 * z * z + d * (1.0 - v + log_v_safe)
+        accept = (v > 0) & accept_cond & ~done
+
+        out = torch.where(accept, d * v, out)
+        done = done | accept
+
+    if not bool(done.all().item()):
+        raise RuntimeError(
+            f"Marsaglia-Tsang rejection sampling did not converge in "
+            f"{max_iters} iterations for alphas={alphas.tolist()}"
+        )
+
+    # Shape-augmentation correction for alpha < 1.
+    if low_mask.any():
+        u2 = torch.empty_like(alphas)
+        u2.uniform_(0.0, 1.0, generator=generator)
+        # u2^(1/alpha) — use the ORIGINAL alpha, not the shifted one.
+        low_factor = torch.pow(u2, 1.0 / orig_alphas)
+        out = torch.where(low_mask, out * low_factor, out)
+
+    return out
+
+
+def _sample_dirichlet_seeded(
+    alphas: torch.Tensor,
+    generator: torch.Generator,
+) -> torch.Tensor:
+    """Seeded Dirichlet row via Gamma normalisation.
+
+    ``alphas`` is expected to be 1-D; returns a probability vector of
+    the same length.  Uses :func:`_sample_gamma_seeded` for the
+    underlying entropy source so the full pipeline is reproducible
+    under a single :class:`torch.Generator`.
+    """
+    if alphas.dim() != 1:
+        raise ValueError(f"alphas must be 1-D, got shape {tuple(alphas.shape)}")
+    g = _sample_gamma_seeded(alphas, generator=generator)
+    g = g.clamp(min=1e-12)  # guard against exact-zero draws
+    return g / g.sum()
+
+
 def sample_sticky_transition_matrix(
     n_regimes: int,
     sticky_alpha: float = 9.0,
@@ -81,31 +189,22 @@ def sample_sticky_transition_matrix(
             f"sticky_alpha={sticky_alpha}, other_alpha={other_alpha}"
         )
 
-    # Implementation note: :class:`torch.distributions.Dirichlet` is the
-    # obvious choice, but its ``sample()`` method does not accept a
-    # :class:`torch.Generator`.  The transition matrix is only sampled
-    # once per regime-switching SCM, so we fall back to the global RNG
-    # for that call; callers that need bit-exact reproducibility should
-    # wrap their code in ``torch.manual_seed(...)`` and any per-call
-    # generator only gates the rest of the pipeline.
+    # Seeded path uses :func:`_sample_dirichlet_seeded` (Marsaglia-Tsang
+    # Gamma normalised to a probability vector) so the matrix is
+    # bit-exact reproducible under the supplied generator.  Without a
+    # generator we fall back to :class:`torch.distributions.Dirichlet`,
+    # which consumes the global RNG.
     rows = []
     for r in range(n_regimes):
         alphas = torch.full((n_regimes,), float(other_alpha), device=device, dtype=dtype)
         alphas[r] = float(sticky_alpha)
         if generator is not None:
-            # Seeded path: sample Gamma rows via the Wilson-Hilferty
-            # transform of a seeded Gaussian.  Works well for alpha >= 1;
-            # for small alpha (the default 0.5 off-diagonal) it is a
-            # biased approximation but still produces valid sticky rows.
-            z = torch.empty(n_regimes, device=device, dtype=dtype)
-            z.normal_(generator=generator)
-            g = alphas * (1.0 - 1.0 / (9.0 * alphas)
-                          + z / torch.sqrt(9.0 * alphas)) ** 3
-            g = g.clamp(min=1e-6)
+            row = _sample_dirichlet_seeded(alphas, generator=generator)
         else:
-            g = torch.distributions.Dirichlet(alphas).sample()
-            g = g.clamp(min=1e-6)
-        rows.append(g / g.sum())
+            g = torch.distributions.Dirichlet(alphas).sample().to(device=device, dtype=dtype)
+            g = g.clamp(min=1e-12)
+            row = g / g.sum()
+        rows.append(row)
     return torch.stack(rows, dim=0)
 
 

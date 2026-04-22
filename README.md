@@ -36,7 +36,7 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 8)
+### Current continuous-time module (phases 1 – 9)
 
 End-to-end **training** pipeline: config → CLI entry → prior →
 dataloader → model → loss → checkpoint.  The prior supports both
@@ -58,7 +58,7 @@ benchmarks:
 - **CausalChamber** (~10 Hz physical-system walks with known actuator
   interventions).
 
-221/221 tests pass in `tests/`.
+243/243 tests pass in `tests/`.
 
 Quick start — train:
 
@@ -371,17 +371,38 @@ in `tests/test_continuous_phase5.py`):
   ``prior.regime_count_range`` keys in
   ``configs/continuous_default.yaml``.
 
-### Not yet implemented (phase 9+)
+**Phase 9 — seeded Marsaglia-Tsang Gamma + Dirichlet** (verified in
+`tests/test_continuous_phase9.py`):
+
+- **`_sample_gamma_seeded(alphas, generator)`** in
+  ``dotime.prior.continuous.regime_switching`` — element-wise Gamma
+  sampler driven entirely by :meth:`torch.Tensor.normal_` and
+  :meth:`torch.Tensor.uniform_` so it honours a
+  :class:`torch.Generator` bit-for-bit.  Marsaglia-Tsang (2000)
+  rejection for ``alpha >= 1``, combined with the shape-augmentation
+  identity ``Gamma(a) = Gamma(a + 1) * U^{1/a}`` for ``a < 1``.
+  Typical acceptance rate > 99% per iteration.
+- **`_sample_dirichlet_seeded(alphas, generator)`** — Dirichlet row
+  via Gamma normalisation; seeded by the same generator.
+- **`sample_sticky_transition_matrix`** now uses the seeded path when
+  a generator is supplied, replacing the Wilson-Hilferty
+  approximation introduced in phase 8.  Wilson-Hilferty was visibly
+  biased for the default ``other_alpha=0.5`` off-diagonal (negative
+  "Gamma" samples clamped to zero after the cube step), which skewed
+  Dirichlet rows toward the diagonal.  Marsaglia-Tsang recovers the
+  correct moments:
+  - ``Gamma(alpha=0.5)`` empirical mean 0.501 vs target 0.5, variance
+    0.51 vs target 0.5 (20 000 samples).
+  - Sticky transition matrix diagonal mean 0.9 (matches the
+    theoretical ``9/(9+0.5+0.5)``).
+
+### Not yet implemented (phase 10+)
 
 - DREAM4 (or similar) in-silico gene-regulatory-network benchmark as
   a third synthetic-but-realistic eval dataset.
 - GatedDeltaProduct continuous-time encoder backend (currently only
   the Transformer backend is wired through the `times` / `t_int_start`
   path end to end).
-- Seeded Dirichlet sampling for the transition matrix (current fallback
-  uses a Wilson-Hilferty approximation of Gamma samples when a
-  `torch.Generator` is supplied, which is mildly biased for small
-  concentration values).
 
 ### Quick example: end-to-end training (Python API)
 
