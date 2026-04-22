@@ -20,6 +20,8 @@ model:
   time_min_freq: 0.01
   time_max_freq: 10.0
   tau_levels: [0.1, 0.25, 0.5, 0.75, 0.9]
+  head_type: quantile         # quantile | bar
+  n_buckets: 1000             # bar head only: number of bucket borders sampled from the prior
 
 prior:
   mode: tscm                  # tscm | random

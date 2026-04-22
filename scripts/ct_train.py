@@ -43,6 +43,14 @@ def main() -> None:
         "--encoder-backend", type=str, default=None, choices=["transformer", "gdp"]
     )
     parser.add_argument("--n-mixer-layers", type=int, default=None)
+    parser.add_argument(
+        "--head-type", type=str, default=None, choices=["quantile", "bar"],
+        help="Output head: quantile (pinball loss) or bar (bucket distribution)",
+    )
+    parser.add_argument(
+        "--n-buckets", type=int, default=None,
+        help="Number of bar-distribution buckets (bar head only)",
+    )
 
     # Prior CLI overrides (most useful for ablations)
     parser.add_argument(
@@ -109,6 +117,8 @@ def main() -> None:
         time_min_freq=m.get("time_min_freq", 0.01),
         time_max_freq=m.get("time_max_freq", 10.0),
         tau_levels=m.get("tau_levels"),
+        head_type=args.head_type or m.get("head_type", "quantile"),
+        n_buckets=args.n_buckets or m.get("n_buckets", 1000),
         # prior
         prior_mode=args.prior_mode or p.get("mode", "tscm"),
         n_min_prior=args.n_min_prior or p.get("n_min_prior", 3),

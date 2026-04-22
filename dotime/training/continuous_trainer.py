@@ -36,6 +36,7 @@ import torch
 import torch.nn as nn
 
 from dotime.data.continuous_dataloader import ContinuousTemporalInterventionDataLoader
+from dotime.model.bar_head import calibrate_bar_distribution
 from dotime.model.continuous import ContinuousDoOverTimePFN
 
 try:
@@ -94,6 +95,9 @@ def train_continuous(
     time_min_freq: float = 0.01,
     time_max_freq: float = 10.0,
     tau_levels: Optional[List[float]] = None,
+    head_type: str = "quantile",
+    n_buckets: int = 1000,
+    bucket_calibration_samples: int = 10000,
     # Prior config
     prior_mode: str = "tscm",
     n_min_prior: int = 3,
@@ -189,8 +193,13 @@ def train_continuous(
         print(f"   Prior: {tscm_structure}  |  schedule: {schedule}  |  pair_mode: {pair_mode}")
     print(f"   Intervention kind probs: {intervention_kind_probs}  |  source: {intervention_source}")
 
-    # 1. Model
+    # 1. Model.  Head choice supports "quantile" (default, no calibration)
+    #    or "bar" (classification-as-regression, needs bucket borders
+    #    sampled from the prior before training starts).
+    if head_type not in ("quantile", "bar"):
+        raise ValueError(f"invalid head_type: {head_type!r}")
     tau_levels = tau_levels or [0.1, 0.25, 0.5, 0.75, 0.9]
+    print(f"   Head type: {head_type}")
     model = ContinuousDoOverTimePFN(
         n_max=n_max,
         embed_size=embed_size,
@@ -199,8 +208,9 @@ def train_continuous(
         n_cross_attn_heads=n_cross_attn_heads,
         encoder_backend=encoder_backend,
         encoder_config=encoder_config,
-        head_type="quantile",
+        head_type=head_type,
         tau_levels=tau_levels,
+        n_buckets=n_buckets,
         n_mixer_layers=n_mixer_layers,
         context_window=context_window,
         num_time_frequencies=num_time_frequencies,
@@ -209,6 +219,47 @@ def train_continuous(
     ).to(device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"   Parameters: {num_params:,}")
+
+    # 1b. Bucket-border calibration for bar head.
+    borders = None
+    if head_type == "bar":
+        cal_steps = max(bucket_calibration_samples // batch_size, 10)
+        print(f"   Calibrating {n_buckets} bar-distribution buckets "
+              f"from {cal_steps} prior batches...")
+        cal_loader = ContinuousTemporalInterventionDataLoader(
+            num_steps=cal_steps,
+            seed=seed + 5_000,
+            device="cpu",  # calibration only reads Y_true_norm scalars
+            prefetch=0,
+            **dict(
+                batch_size=batch_size,
+                prior_mode=prior_mode,
+                tscm_structure=tscm_structure,
+                n_min_prior=n_min_prior,
+                n_max_prior=n_max_prior,
+                edge_prob=edge_prob,
+                hidden_prob=hidden_prob,
+                schedule=schedule,
+                dt=dt,
+                jitter=jitter,
+                exp_rate=exp_rate,
+                pair_mode=pair_mode,
+                t_range=t_range,
+                n_max=n_max,
+                normalize=True,
+                target_key=target_key,
+                n_queries=n_queries,
+                query_mode=query_mode,
+                theta_range=theta_range,
+                sigma_range=sigma_range,
+                weight_scale=weight_scale,
+                intervention_value_scale=intervention_value_scale,
+                intervention_window_frac=intervention_window_frac,
+            ),
+        )
+        bar_dist, borders = calibrate_bar_distribution(cal_loader, n_buckets=n_buckets)
+        model.bar_head.set_bar_distribution(bar_dist, borders.to(device))
+        print(f"   Border range: [{borders.min():.3f}, {borders.max():.3f}]")
 
     # 2. Data loaders (train + eval with separate seeds)
     loader_kwargs = dict(
@@ -337,6 +388,7 @@ def train_continuous(
                         "optimizer_state_dict": optimizer.state_dict(),
                         "eval_loss": eval_loss,
                         "eval_rmse": eval_rmse,
+                        "borders": borders,
                         "config": {
                             "n_max": n_max,
                             "embed_size": embed_size,
@@ -349,6 +401,8 @@ def train_continuous(
                             "time_min_freq": time_min_freq,
                             "time_max_freq": time_max_freq,
                             "tau_levels": tau_levels,
+                            "head_type": head_type,
+                            "n_buckets": n_buckets,
                             "tscm_structure": tscm_structure,
                             "schedule": schedule,
                             "pair_mode": pair_mode,

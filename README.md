@@ -36,23 +36,28 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 6)
+### Current continuous-time module (phases 1 – 7)
 
 End-to-end **training** pipeline: config → CLI entry → prior →
 dataloader → model → loss → checkpoint.  The prior supports both
 **named TSCM structures** (back_door, front_door, IV, ...) and a
 **random-graph** continuous-time prior (variable N, random DAG, random
 (A, Y) roles, configurable fraction of **hidden confounders** per
-trajectory).
+trajectory).  Output head is **quantile** (pinball loss) or **bar**
+(classification-as-regression over bucket borders calibrated from the
+prior).
 
-End-to-end **zero-shot evaluation** pipeline on two real-world
+End-to-end **zero-shot evaluation** pipeline on three real-world
 benchmarks:
 - **Theophylline** (pharmacokinetics, 12 subjects × 11 irregular PK
-  observations).
+  observations, 2 variables: dose → concentration).
+- **Warfarin** (PK/PD, 32 subjects with irregular cp + PCA observations,
+  3 variables: dose → concentration → PD outcome — a direct front-door
+  structure match for the synthetic TSCM prior).
 - **CausalChamber** (~10 Hz physical-system walks with known actuator
   interventions).
 
-152/152 tests pass in `tests/`.
+199/199 tests pass in `tests/`.
 
 Quick start — train:
 
@@ -102,6 +107,25 @@ PYTHONPATH=. python scripts/ct_evaluate.py \
     --chamber-query-var red \
     --chamber-max-episodes 50 \
     --save-json results/chamber_zero_shot.json
+```
+
+Quick start — evaluate zero-shot on Warfarin (dose → cp → PCA):
+
+```bash
+PYTHONPATH=. python scripts/ct_evaluate.py \
+    --checkpoint checkpoints/ct/random_graph/continuous_do_over_time_pfn_best.pt \
+    --benchmark warfarin \
+    --save-json results/warfarin_zero_shot.json
+```
+
+Quick start — train with a bar-distribution head:
+
+```bash
+PYTHONPATH=. python scripts/ct_train.py \
+    --config configs/continuous_default.yaml \
+    --head-type bar --n-buckets 1000 \
+    --total-steps 5000 \
+    --save-dir checkpoints/ct/bar_head
 ```
 
 See `configs/continuous_default.yaml` for the full list of knobs and
@@ -269,11 +293,48 @@ in `tests/test_continuous_phase5.py`):
   (``_sample_queries`` excludes them as query targets).  Phase 6
   added a regression test that catches any future regression there.
 
-### Not yet implemented (phase 7+)
+**Phase 7 — Warfarin PK/PD + bar-distribution head** (verified in
+`tests/test_continuous_warfarin.py` and `tests/test_continuous_bar_head.py`):
 
-- Warfarin PK/PD loader (more complex: dose → concentration → INR,
-  multiple dosing regimens).
-- Bar-distribution head for continuous-time (phase 3 is quantile only).
+- **`dotime.data.pk_pd.warfarin.load_warfarin`** — reads the bundled
+  `data/pk_pd/warfarin.csv` (ported from `nlmixr2data`) and returns 32
+  `WarfarinSubject` records.  Each subject has 1 oral dose at t=0, an
+  irregular concentration trajectory (``cp``), and an irregular
+  PCA/pharmacodynamic trajectory.  Duplicate same-timestamp replicates
+  are averaged so the per-stream time axes stay strictly increasing.
+- **`dotime.data.pk_pd.warfarin_adapter.build_warfarin_batch`** —
+  3-variable adapter (canonical ``0 = Dose, 1 = cp, 2 = pca``) on the
+  per-subject union time grid.  Each observed ``(variable, time)`` pair
+  becomes one query entry, so the batch carries ``n_cp + n_pca`` queries
+  per subject and exercises both the PK mediator and the PD outcome in
+  one pass.
+- **`dotime.eval.continuous_warfarin_eval.evaluate_warfarin_dataset`** —
+  reports per-subject and aggregate RMSE / MAE / Pearson r **split by
+  variable** (cp vs pca) plus lift over a per-subject mean-value naive
+  baseline for each stream.
+- **`scripts/ct_evaluate.py --benchmark warfarin`** — CLI entry point.
+
+- **Bar-distribution head for continuous-time** now available in
+  :class:`ContinuousDoOverTimePFN` via ``head_type="bar"``.  The
+  continuous trainer calibrates bucket borders from the prior at
+  training start and stores them in the checkpoint so
+  ``ct_evaluate.py`` can rehydrate the head on load.  Calibration
+  reuses the existing discrete-time ``calibrate_bar_distribution``
+  helper unchanged.  New CLI flags ``--head-type {quantile,bar}`` and
+  ``--n-buckets N`` on ``scripts/ct_train.py`` plus matching
+  ``model.head_type`` / ``model.n_buckets`` keys in
+  ``configs/continuous_default.yaml``.
+
+### Not yet implemented (phase 8+)
+
+- DREAM4 (or similar) in-silico gene-regulatory-network benchmark as
+  a third synthetic eval dataset.
+- GatedDeltaProduct continuous-time encoder backend (currently only
+  the Transformer backend is wired through the `times` / `t_int_start`
+  path end to end).
+- Non-stationary / regime-switching continuous-time prior (analogue of
+  CausalTimePrior's 15% regime-switching slice; today the CT prior is
+  stationary within a trajectory).
 
 ### Quick example: end-to-end training (Python API)
 
