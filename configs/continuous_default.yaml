@@ -36,6 +36,7 @@ prior:
   p_neural: 0.0               # Per-variable neural-drift probability when mechanism_kind == mixed.
   neural_hidden_dim: 8        # Hidden width of the MLP drift.
   neural_out_scale_range: [0.5, 2.0]  # Uniform prior on the MLP output gain.
+  num_substeps: 1             # Phase-11 fine-grid integration. 1 = tier-(B) naive integration (one EM step per observation gap). Large values approximate tier-(C) schedule-invariant continuous integration.
   # TSCM-structured mode only:
   tscm_structure: back_door   # one of: back_door, front_door, instrumental_variable, rct_no_confounding, ...
   schedule: regular           # regular | jittered | exponential

@@ -357,6 +357,7 @@ class ContinuousRegimeSwitchingSCM:
         noise: Optional[torch.Tensor] = None,
         regime_trajectory: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
+        num_substeps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the regime-switching SCM forward on the given schedule.
 
@@ -370,18 +371,28 @@ class ContinuousRegimeSwitchingSCM:
         Passing in pre-sampled ``noise`` and ``regime_trajectory`` lets
         paired simulations share both, which is how counterfactual
         pairs stay identical before the intervention window even in the
-        presence of regime switches.
+        presence of regime switches.  ``num_substeps`` mirrors the
+        fine-grid integration knob on :class:`ContinuousSCM`: each
+        observation gap is split into that many Euler-Maruyama
+        sub-steps, all governed by the regime active at the gap's
+        start (regimes switch on observation boundaries only).
         """
         if times.dim() != 1 or dts.dim() != 1 or dts.numel() != times.numel() - 1:
             raise ValueError(
                 f"shape mismatch: times={tuple(times.shape)}, dts={tuple(dts.shape)}"
             )
-        T = times.numel()
-        if noise is None:
-            noise = self._draw_noise(T - 1, generator=generator)
-        elif noise.shape != (T - 1, self.n_vars):
+        if not isinstance(num_substeps, int) or num_substeps < 1:
             raise ValueError(
-                f"noise has shape {tuple(noise.shape)}, expected ({T - 1}, {self.n_vars})"
+                f"num_substeps must be a positive int, got {num_substeps}"
+            )
+        T = times.numel()
+        fine_steps_total = (T - 1) * num_substeps
+        if noise is None:
+            noise = self._draw_noise(fine_steps_total, generator=generator)
+        elif noise.shape != (fine_steps_total, self.n_vars):
+            raise ValueError(
+                f"noise has shape {tuple(noise.shape)}, expected "
+                f"({fine_steps_total}, {self.n_vars})"
             )
         if regime_trajectory is None:
             regime_trajectory = self._draw_regime_trajectory(T, generator=generator)
@@ -399,17 +410,27 @@ class ContinuousRegimeSwitchingSCM:
         trajectory = torch.empty(T, self.n_vars, device=self.device, dtype=self.dtype)
         trajectory[0] = x
         for i in range(T - 1):
-            # Active regime governing the step i -> i+1 is the regime at
+            # Active regime governing the gap i -> i+1 is the regime at
             # time i (Euler-Maruyama is explicit, so start-of-step drift
-            # / diffusion parameters are what we use).
+            # / diffusion parameters are what we use).  Regimes do not
+            # switch within a single observation gap, so all sub-steps
+            # in this gap share the same active regime.
             r = int(regime_trajectory[i].item())
-            x = self.regimes[r]._step(
-                x,
-                dts[i],
-                noise[i],
-                intervention=intervention,
-                t_next=float(times[i + 1].item()),
-            )
+            fine_dt = dts[i] / num_substeps
+            t_i = float(times[i].item())
+            t_next = float(times[i + 1].item())
+            for k in range(num_substeps):
+                t_fine = t_i + (k + 1) * float(fine_dt.item())
+                if k == num_substeps - 1:
+                    t_fine = t_next
+                noise_idx = i * num_substeps + k
+                x = self.regimes[r]._step(
+                    x,
+                    fine_dt,
+                    noise[noise_idx],
+                    intervention=intervention,
+                    t_next=t_fine,
+                )
             trajectory[i + 1] = x
 
         self.last_regime_trajectory = regime_trajectory

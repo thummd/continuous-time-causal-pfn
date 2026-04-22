@@ -259,10 +259,15 @@ class ContinuousExtendedPrior:
         theta_range: tuple = (0.5, 2.0),
         sigma_range: tuple = (0.2, 0.6),
         weight_scale: float = 0.5,
+        num_substeps: int = 1,
         seed: int = 42,
     ) -> None:
         if pair_mode not in ("counterfactual", "interventional"):
             raise ValueError(f"invalid pair_mode: {pair_mode!r}")
+        if not isinstance(num_substeps, int) or num_substeps < 1:
+            raise ValueError(
+                f"num_substeps must be a positive int, got {num_substeps}"
+            )
         if intervention_source not in ("prior", "positivity_aware"):
             raise ValueError(f"invalid intervention_source: {intervention_source!r}")
         if time_varying_profile not in ("step", "ramp", "sine", "random"):
@@ -287,6 +292,7 @@ class ContinuousExtendedPrior:
         self.intervention_source = intervention_source
         self.time_varying_profile = time_varying_profile
         self.soft_shift_scale = float(soft_shift_scale)
+        self.num_substeps = int(num_substeps)
 
         self.sampler = ContinuousTSCMSampler(
             structure=TSCMStructure(tscm_structure),
@@ -415,7 +421,8 @@ class ContinuousExtendedPrior:
         #    the noise (and, for regime-switching SCMs, the regime
         #    trajectory) up front so that the counterfactual path can
         #    share them with the interventional simulation below.
-        shared_noise = scm._draw_noise(times.numel() - 1, generator=self._torch_gen)
+        fine_steps = (times.numel() - 1) * self.num_substeps
+        shared_noise = scm._draw_noise(fine_steps, generator=self._torch_gen)
         shared_regime_traj = None
         if hasattr(scm, "_draw_regime_trajectory"):
             shared_regime_traj = scm._draw_regime_trajectory(
@@ -424,6 +431,7 @@ class ContinuousExtendedPrior:
         _, X_obs_raw = scm.simulate(
             times, dts, intervention=None,
             noise=shared_noise, regime_trajectory=shared_regime_traj,
+            num_substeps=self.num_substeps,
         )
 
         # 5. Compute int_onset_idx and derive pre-intervention stats
@@ -459,10 +467,12 @@ class ContinuousExtendedPrior:
             _, X_int_raw = scm.simulate(
                 times, dts, intervention=intervention,
                 noise=shared_noise, regime_trajectory=shared_regime_traj,
+                num_substeps=self.num_substeps,
             )
         else:
             _, X_int_raw = scm.simulate(
                 times, dts, intervention=intervention, generator=self._torch_gen,
+                num_substeps=self.num_substeps,
             )
         X_obs = X_obs_raw
         X_int = X_int_raw

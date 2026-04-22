@@ -293,6 +293,7 @@ class ContinuousSCM:
         noise: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
         regime_trajectory: Optional[torch.Tensor] = None,
+        num_substeps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the SCM forward on a given observation schedule.
 
@@ -315,20 +316,36 @@ class ContinuousSCM:
             Initial state ``X(times[0])`` of shape ``(n_vars,)``.
             Defaults to zeros.
         noise : torch.Tensor, optional
-            Pre-sampled noise increments of shape ``(T - 1, n_vars)``.
-            Passing this in lets callers share a noise realisation
-            between paired simulations -- this is the mechanism used by
+            Pre-sampled noise increments.  Shape must be
+            ``((T - 1) * num_substeps, n_vars)``.  Passing this in lets
+            callers share a noise realisation between paired simulations
+            -- this is the mechanism used by
             :meth:`sample_counterfactual_pair` to produce true
-            counterfactual rather than interventional pairs.
+            counterfactual rather than interventional pairs.  Note that
+            when ``num_substeps > 1`` the required noise is longer
+            than the observation schedule to cover all fine-grid steps.
         generator : torch.Generator, optional
             Only used when ``noise`` is not provided.
+        num_substeps : int, default 1
+            Phase-11 fine-grid integration.  Each observation gap
+            ``Delta_i = times[i+1] - times[i]`` is split into
+            ``num_substeps`` Euler-Maruyama sub-steps of size
+            ``Delta_i / num_substeps`` with independent noise per
+            sub-step.  ``num_substeps = 1`` recovers naive
+            observation-grid integration (tier B in the paper); values
+            much greater than 1 approximate tier-C fine-grid
+            integration so that the law of the trajectory is
+            (approximately) schedule-invariant as required by
+            Definition 3.1 of the paper.
 
         Returns
         -------
         times : torch.Tensor
             Echoed schedule ``(T,)``.
         trajectory : torch.Tensor
-            State trajectory of shape ``(T, n_vars)``.
+            State trajectory of shape ``(T, n_vars)``; only the
+            observation times are recorded even when
+            ``num_substeps > 1``.
         """
         if times.dim() != 1:
             raise ValueError(f"times must be 1-D, got shape {tuple(times.shape)}")
@@ -336,12 +353,16 @@ class ContinuousSCM:
             raise ValueError(
                 f"dts must be 1-D of length T - 1, got shape {tuple(dts.shape)} for T = {times.numel()}"
             )
+        if not isinstance(num_substeps, int) or num_substeps < 1:
+            raise ValueError(f"num_substeps must be a positive int, got {num_substeps}")
         T = times.numel()
+        fine_steps_total = (T - 1) * num_substeps
         if noise is None:
-            noise = self._draw_noise(T - 1, generator=generator)
-        elif noise.shape != (T - 1, self.n_vars):
+            noise = self._draw_noise(fine_steps_total, generator=generator)
+        elif noise.shape != (fine_steps_total, self.n_vars):
             raise ValueError(
-                f"noise has shape {tuple(noise.shape)}, expected ({T - 1}, {self.n_vars})"
+                f"noise has shape {tuple(noise.shape)}, expected "
+                f"({fine_steps_total}, {self.n_vars})"
             )
 
         if x0 is None:
@@ -352,13 +373,25 @@ class ContinuousSCM:
         trajectory = torch.empty(T, self.n_vars, device=self.device, dtype=self.dtype)
         trajectory[0] = x
         for i in range(T - 1):
-            x = self._step(
-                x,
-                dts[i],
-                noise[i],
-                intervention=intervention,
-                t_next=float(times[i + 1].item()),
-            )
+            fine_dt = dts[i] / num_substeps
+            t_i = float(times[i].item())
+            t_next = float(times[i + 1].item())
+            for k in range(num_substeps):
+                # Time at the END of this sub-step.  The intervention
+                # policy is evaluated at this forward time, matching the
+                # ``t_next`` convention used in the single-step path.
+                t_fine = t_i + (k + 1) * float(fine_dt.item())
+                if k == num_substeps - 1:
+                    # Snap to exact observation time to avoid float drift.
+                    t_fine = t_next
+                noise_idx = i * num_substeps + k
+                x = self._step(
+                    x,
+                    fine_dt,
+                    noise[noise_idx],
+                    intervention=intervention,
+                    t_next=t_fine,
+                )
             trajectory[i + 1] = x
 
         return times, trajectory
@@ -370,6 +403,7 @@ class ContinuousSCM:
         intervention: ContinuousIntervention,
         x0: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
+        num_substeps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return matched ``(times, X_obs, X_cf)`` with shared noise.
 
@@ -383,10 +417,22 @@ class ContinuousSCM:
         Contrast with :meth:`sample_interventional_pair`, which draws
         fresh noise for the interventional run and thus returns
         interventional rather than counterfactual semantics.
+
+        ``num_substeps`` forwards to :meth:`simulate` and controls
+        fine-grid integration; the shared noise is drawn on the fine
+        grid so the counterfactual property is preserved at any
+        refinement level.
         """
-        noise = self._draw_noise(times.numel() - 1, generator=generator)
-        _, x_obs = self.simulate(times, dts, intervention=None, x0=x0, noise=noise)
-        _, x_cf = self.simulate(times, dts, intervention=intervention, x0=x0, noise=noise)
+        fine_steps = (times.numel() - 1) * num_substeps
+        noise = self._draw_noise(fine_steps, generator=generator)
+        _, x_obs = self.simulate(
+            times, dts, intervention=None, x0=x0, noise=noise,
+            num_substeps=num_substeps,
+        )
+        _, x_cf = self.simulate(
+            times, dts, intervention=intervention, x0=x0, noise=noise,
+            num_substeps=num_substeps,
+        )
         return times, x_obs, x_cf
 
     def sample_interventional_pair(
@@ -396,6 +442,7 @@ class ContinuousSCM:
         intervention: ContinuousIntervention,
         x0: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
+        num_substeps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return matched ``(times, X_obs, X_int)`` with independent noise.
 
@@ -407,6 +454,12 @@ class ContinuousSCM:
         :meth:`sample_counterfactual_pair` for individual-level
         counterfactual training.
         """
-        _, x_obs = self.simulate(times, dts, intervention=None, x0=x0, generator=generator)
-        _, x_int = self.simulate(times, dts, intervention=intervention, x0=x0, generator=generator)
+        _, x_obs = self.simulate(
+            times, dts, intervention=None, x0=x0, generator=generator,
+            num_substeps=num_substeps,
+        )
+        _, x_int = self.simulate(
+            times, dts, intervention=intervention, x0=x0,
+            generator=generator, num_substeps=num_substeps,
+        )
         return times, x_obs, x_int

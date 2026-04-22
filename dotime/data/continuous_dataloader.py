@@ -116,6 +116,7 @@ class ContinuousTemporalInterventionDataLoader:
         p_neural: float = 0.0,
         neural_hidden_dim: int = 8,
         neural_out_scale_range: tuple = (0.5, 2.0),
+        num_substeps: int = 1,
     ) -> None:
         """Construct the loader.
 
@@ -156,6 +157,7 @@ class ContinuousTemporalInterventionDataLoader:
             theta_range=theta_range,
             sigma_range=sigma_range,
             weight_scale=weight_scale,
+            num_substeps=num_substeps,
             seed=seed,
         )
 

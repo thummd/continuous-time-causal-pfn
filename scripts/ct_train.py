@@ -92,6 +92,14 @@ def main() -> None:
         "--neural-hidden-dim", type=int, default=None,
         help="Hidden width of the MLP drift (default 8).",
     )
+    parser.add_argument(
+        "--num-substeps", type=int, default=None,
+        help="Phase-11 fine-grid integration. Each observation gap is "
+             "split into this many Euler-Maruyama sub-steps with "
+             "independent noise per step. 1 (default) = tier-(B) naive "
+             "observation-grid integration. Large values approximate "
+             "tier-(C) schedule-invariant continuous integration.",
+    )
     parser.add_argument("--tscm-structure", type=str, default=None)
     parser.add_argument(
         "--schedule", type=str, default=None, choices=["regular", "jittered", "exponential"]
@@ -161,6 +169,7 @@ def main() -> None:
         p_neural=args.p_neural if args.p_neural is not None else p.get("p_neural", 0.0),
         neural_hidden_dim=args.neural_hidden_dim or p.get("neural_hidden_dim", 8),
         neural_out_scale_range=tuple(p.get("neural_out_scale_range", [0.5, 2.0])),
+        num_substeps=args.num_substeps or p.get("num_substeps", 1),
         tscm_structure=args.tscm_structure or p["tscm_structure"],
         schedule=args.schedule or p["schedule"],
         dt=args.dt if args.dt is not None else p["dt"],
