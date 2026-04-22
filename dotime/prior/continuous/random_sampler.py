@@ -35,6 +35,7 @@ from .extended_prior import (
     ContinuousExtendedPrior,
     _SampledSCMContext,
 )
+from .regime_switching import ContinuousRegimeSwitchingSCM
 
 
 def _pick_intervention_and_outcome(
@@ -100,6 +101,10 @@ class RandomContinuousSCMSampler:
         sigma_range: tuple = (0.2, 0.6),
         weight_scale: float = 0.5,
         hidden_prob: float = 0.0,
+        regime_prob: float = 0.0,
+        regime_count_range: tuple = (2, 3),
+        sticky_alpha: float = 9.0,
+        other_alpha: float = 0.5,
         seed: int = 0,
     ) -> None:
         if not 2 <= n_min <= n_max_prior:
@@ -111,6 +116,13 @@ class RandomContinuousSCMSampler:
             raise ValueError(f"edge_prob must be in [0, 1], got {edge_prob}")
         if not 0.0 <= hidden_prob <= 1.0:
             raise ValueError(f"hidden_prob must be in [0, 1], got {hidden_prob}")
+        if not 0.0 <= regime_prob <= 1.0:
+            raise ValueError(f"regime_prob must be in [0, 1], got {regime_prob}")
+        if not (1 <= regime_count_range[0] <= regime_count_range[1]):
+            raise ValueError(
+                f"regime_count_range must be (lo, hi) with 1 <= lo <= hi, "
+                f"got {regime_count_range}"
+            )
 
         self.n_min = int(n_min)
         self.n_max_prior = int(n_max_prior)
@@ -119,6 +131,10 @@ class RandomContinuousSCMSampler:
         self.sigma_range = tuple(sigma_range)
         self.weight_scale = float(weight_scale)
         self.hidden_prob = float(hidden_prob)
+        self.regime_prob = float(regime_prob)
+        self.regime_count_range = tuple(regime_count_range)
+        self.sticky_alpha = float(sticky_alpha)
+        self.other_alpha = float(other_alpha)
 
         self._torch_gen = torch.Generator().manual_seed(int(seed))
         self._np_rng = np.random.RandomState(int(seed))
@@ -139,20 +155,47 @@ class RandomContinuousSCMSampler:
         by the extended prior.  ``A`` and ``Y`` are guaranteed to be
         *excluded* from the hidden list.
 
+        With probability ``regime_prob`` the returned ``scm`` is a
+        :class:`ContinuousRegimeSwitchingSCM` with ``R`` regimes drawn
+        uniformly from ``regime_count_range``; otherwise it's a plain
+        :class:`ContinuousSCM`.  Both have a compatible ``simulate``
+        signature so the extended prior can dispatch uniformly.
+
         The ``generator`` arg is kept for interface parity with
         :class:`ContinuousTSCMSampler` but the sampler's own
         ``_torch_gen`` / ``_np_rng`` are used throughout for
         reproducibility.
         """
         n_vars = int(self._np_rng.randint(self.n_min, self.n_max_prior + 1))
-        scm = ContinuousSCM.sample_random(
-            n_vars=n_vars,
-            edge_prob=self.edge_prob,
-            theta_range=self.theta_range,
-            sigma_range=self.sigma_range,
-            weight_scale=self.weight_scale,
-            generator=self._torch_gen,
+
+        is_regime_switching = (
+            self.regime_prob > 0.0 and self._np_rng.rand() < self.regime_prob
         )
+        if is_regime_switching:
+            n_regimes = int(self._np_rng.randint(
+                self.regime_count_range[0], self.regime_count_range[1] + 1,
+            ))
+            scm = ContinuousRegimeSwitchingSCM.sample_random(
+                n_vars=n_vars,
+                n_regimes=n_regimes,
+                edge_prob=self.edge_prob,
+                theta_range=self.theta_range,
+                sigma_range=self.sigma_range,
+                weight_scale=self.weight_scale,
+                sticky_alpha=self.sticky_alpha,
+                other_alpha=self.other_alpha,
+                generator=self._torch_gen,
+            )
+        else:
+            scm = ContinuousSCM.sample_random(
+                n_vars=n_vars,
+                edge_prob=self.edge_prob,
+                theta_range=self.theta_range,
+                sigma_range=self.sigma_range,
+                weight_scale=self.weight_scale,
+                generator=self._torch_gen,
+            )
+
         a_idx, y_idx = _pick_intervention_and_outcome(n_vars, self._np_rng)
 
         # Decide which of the non-(A, Y) nodes are hidden.  We never hide
@@ -190,6 +233,10 @@ class RandomContinuousExtendedPrior(ContinuousExtendedPrior):
         n_max_prior: int = 10,
         edge_prob: float = 0.3,
         hidden_prob: float = 0.0,
+        regime_prob: float = 0.0,
+        regime_count_range: tuple = (2, 3),
+        sticky_alpha: float = 9.0,
+        other_alpha: float = 0.5,
         tscm_structure_placeholder: str = "rct_no_confounding",
         **kwargs,
     ) -> None:
@@ -206,6 +253,10 @@ class RandomContinuousExtendedPrior(ContinuousExtendedPrior):
             sigma_range=self._forwarded_kwarg(kwargs, "sigma_range", (0.2, 0.6)),
             weight_scale=self._forwarded_kwarg(kwargs, "weight_scale", 0.5),
             hidden_prob=hidden_prob,
+            regime_prob=regime_prob,
+            regime_count_range=regime_count_range,
+            sticky_alpha=sticky_alpha,
+            other_alpha=other_alpha,
             seed=self._seed,
         )
 

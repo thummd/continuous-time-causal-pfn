@@ -412,10 +412,19 @@ class ContinuousExtendedPrior:
         intervention_kind = self._sample_intervention_kind()
 
         # 4. Simulate X_obs (never sees the intervention).  Pre-sample
-        #    the noise up front so that the counterfactual path can
-        #    share it with the interventional simulation below.
+        #    the noise (and, for regime-switching SCMs, the regime
+        #    trajectory) up front so that the counterfactual path can
+        #    share them with the interventional simulation below.
         shared_noise = scm._draw_noise(times.numel() - 1, generator=self._torch_gen)
-        _, X_obs_raw = scm.simulate(times, dts, intervention=None, noise=shared_noise)
+        shared_regime_traj = None
+        if hasattr(scm, "_draw_regime_trajectory"):
+            shared_regime_traj = scm._draw_regime_trajectory(
+                times.numel(), generator=self._torch_gen,
+            )
+        _, X_obs_raw = scm.simulate(
+            times, dts, intervention=None,
+            noise=shared_noise, regime_trajectory=shared_regime_traj,
+        )
 
         # 5. Compute int_onset_idx and derive pre-intervention stats
         #    from X_obs_raw; these feed positivity-aware value clipping.
@@ -442,12 +451,14 @@ class ContinuousExtendedPrior:
         )
 
         # 7. Simulate the interventional / counterfactual trajectory.
-        #    Counterfactual pair_mode reuses shared_noise so pre-window
-        #    trajectories match bit-for-bit; interventional pair_mode
-        #    draws a fresh noise realisation.
+        #    Counterfactual pair_mode reuses shared_noise + shared regime
+        #    trajectory so pre-window trajectories match bit-for-bit;
+        #    interventional pair_mode draws fresh noise (and, for
+        #    regime-switching SCMs, a fresh regime trajectory too).
         if self.pair_mode == "counterfactual":
             _, X_int_raw = scm.simulate(
-                times, dts, intervention=intervention, noise=shared_noise,
+                times, dts, intervention=intervention,
+                noise=shared_noise, regime_trajectory=shared_regime_traj,
             )
         else:
             _, X_int_raw = scm.simulate(

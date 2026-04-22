@@ -104,6 +104,10 @@ def train_continuous(
     n_max_prior: int = 10,
     edge_prob: float = 0.3,
     hidden_prob: float = 0.0,
+    regime_prob: float = 0.0,
+    regime_count_range: tuple = (2, 3),
+    sticky_alpha: float = 9.0,
+    other_alpha: float = 0.5,
     tscm_structure: str = "back_door",
     schedule: str = "regular",
     dt: float = 1.0,
@@ -184,9 +188,15 @@ def train_continuous(
     print("Continuous-time Do-Over-Time-PFN Training")
     print("=" * 70)
     if prior_mode == "random":
+        regime_msg = ""
+        if regime_prob > 0.0:
+            regime_msg = (
+                f", regime_prob={regime_prob} (R in "
+                f"[{regime_count_range[0]}, {regime_count_range[1]}])"
+            )
         print(
             f"   Prior: random-graph (N in [{n_min_prior}, {n_max_prior}], "
-            f"edge_prob={edge_prob}, hidden_prob={hidden_prob})"
+            f"edge_prob={edge_prob}, hidden_prob={hidden_prob}{regime_msg})"
             f"  |  schedule: {schedule}  |  pair_mode: {pair_mode}"
         )
     else:
@@ -239,6 +249,10 @@ def train_continuous(
                 n_max_prior=n_max_prior,
                 edge_prob=edge_prob,
                 hidden_prob=hidden_prob,
+                regime_prob=regime_prob,
+                regime_count_range=regime_count_range,
+                sticky_alpha=sticky_alpha,
+                other_alpha=other_alpha,
                 schedule=schedule,
                 dt=dt,
                 jitter=jitter,
@@ -270,6 +284,10 @@ def train_continuous(
         n_max_prior=n_max_prior,
         edge_prob=edge_prob,
         hidden_prob=hidden_prob,
+        regime_prob=regime_prob,
+        regime_count_range=regime_count_range,
+        sticky_alpha=sticky_alpha,
+        other_alpha=other_alpha,
         schedule=schedule,
         dt=dt,
         jitter=jitter,

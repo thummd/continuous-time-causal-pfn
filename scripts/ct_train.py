@@ -66,6 +66,16 @@ def main() -> None:
              "(random-graph prior only). Hidden nodes still drive the "
              "dynamics but are masked out of X_obs / variable_mask.",
     )
+    parser.add_argument(
+        "--regime-prob", type=float, default=None,
+        help="Fraction of trajectories drawn from a regime-switching "
+             "continuous-time SCM (random-graph prior only). 0.0 = "
+             "always stationary; 0.15 matches the discrete-time CTP mix.",
+    )
+    parser.add_argument(
+        "--regime-count-range", type=int, nargs=2, default=None, metavar=("LO", "HI"),
+        help="Uniform prior on the number of regimes R in [LO, HI].",
+    )
     parser.add_argument("--tscm-structure", type=str, default=None)
     parser.add_argument(
         "--schedule", type=str, default=None, choices=["regular", "jittered", "exponential"]
@@ -125,6 +135,12 @@ def main() -> None:
         n_max_prior=args.n_max_prior or p.get("n_max_prior", 10),
         edge_prob=args.edge_prob if args.edge_prob is not None else p.get("edge_prob", 0.3),
         hidden_prob=args.hidden_prob if args.hidden_prob is not None else p.get("hidden_prob", 0.0),
+        regime_prob=args.regime_prob if args.regime_prob is not None else p.get("regime_prob", 0.0),
+        regime_count_range=(
+            tuple(args.regime_count_range)
+            if args.regime_count_range is not None
+            else tuple(p.get("regime_count_range", [2, 3]))
+        ),
         tscm_structure=args.tscm_structure or p["tscm_structure"],
         schedule=args.schedule or p["schedule"],
         dt=args.dt if args.dt is not None else p["dt"],

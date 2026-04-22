@@ -38,6 +38,10 @@ from .random_sampler import (
     RandomContinuousExtendedPrior,
     RandomContinuousSCMSampler,
 )
+from .regime_switching import (
+    ContinuousRegimeSwitchingSCM,
+    sample_sticky_transition_matrix,
+)
 from .time_schedule import (
     exponential_schedule,
     from_times,
@@ -49,6 +53,7 @@ from .tscm_sampler import ContinuousTSCMSampler
 __all__ = [
     "ContinuousExtendedPrior",
     "ContinuousIntervention",
+    "ContinuousRegimeSwitchingSCM",
     "ContinuousSCM",
     "ContinuousTSCMSampler",
     "InterventionKind",
@@ -60,4 +65,5 @@ __all__ = [
     "jittered_schedule",
     "regular_schedule",
     "sample_ou_mechanism",
+    "sample_sticky_transition_matrix",
 ]

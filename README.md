@@ -36,14 +36,15 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 7)
+### Current continuous-time module (phases 1 – 8)
 
 End-to-end **training** pipeline: config → CLI entry → prior →
 dataloader → model → loss → checkpoint.  The prior supports both
 **named TSCM structures** (back_door, front_door, IV, ...) and a
 **random-graph** continuous-time prior (variable N, random DAG, random
 (A, Y) roles, configurable fraction of **hidden confounders** per
-trajectory).  Output head is **quantile** (pinball loss) or **bar**
+trajectory, and a **regime-switching** slice for non-stationary
+dynamics).  Output head is **quantile** (pinball loss) or **bar**
 (classification-as-regression over bucket borders calibrated from the
 prior).
 
@@ -57,7 +58,7 @@ benchmarks:
 - **CausalChamber** (~10 Hz physical-system walks with known actuator
   interventions).
 
-199/199 tests pass in `tests/`.
+221/221 tests pass in `tests/`.
 
 Quick start — train:
 
@@ -126,6 +127,20 @@ PYTHONPATH=. python scripts/ct_train.py \
     --head-type bar --n-buckets 1000 \
     --total-steps 5000 \
     --save-dir checkpoints/ct/bar_head
+```
+
+Quick start — train with a regime-switching prior mix:
+
+```bash
+# Mirrors the discrete-time CTP's 15% regime-switching slice, plus
+# hidden confounders for realism.
+PYTHONPATH=. python scripts/ct_train.py \
+    --config configs/continuous_default.yaml \
+    --prior-mode random \
+    --n-min-prior 3 --n-max-prior 8 --edge-prob 0.3 \
+    --hidden-prob 0.2 --regime-prob 0.15 --regime-count-range 2 3 \
+    --total-steps 5000 \
+    --save-dir checkpoints/ct/regime_switching
 ```
 
 See `configs/continuous_default.yaml` for the full list of knobs and
@@ -325,16 +340,48 @@ in `tests/test_continuous_phase5.py`):
   ``model.head_type`` / ``model.n_buckets`` keys in
   ``configs/continuous_default.yaml``.
 
-### Not yet implemented (phase 8+)
+**Phase 8 — regime-switching continuous-time prior** (verified in
+`tests/test_continuous_phase8.py`):
+
+- **`dotime.prior.continuous.ContinuousRegimeSwitchingSCM`** — holds
+  ``R`` independent :class:`ContinuousSCM` regimes sharing the same
+  variable count and a sticky Markov transition matrix over regime
+  state.  ``simulate(times, dts, noise, regime_trajectory)`` returns
+  the same ``(times, trajectory)`` shape as :class:`ContinuousSCM` so
+  it is a drop-in replacement in the extended prior's dispatch.  The
+  regime trajectory is pre-sampled once per pair and **shared with the
+  noise realisation** between observational and counterfactual runs,
+  keeping the "identical before intervention" property intact across
+  regime switches.
+- **`sample_sticky_transition_matrix(n_regimes, sticky_alpha=9.0,
+  other_alpha=0.5)`** — Dirichlet-sampled transition matrix whose
+  diagonal is typically ~0.9 (expected regime duration ~10
+  observation steps), matching the discrete-time CTP convention.
+- **`RandomContinuousSCMSampler`** gained ``regime_prob``,
+  ``regime_count_range``, ``sticky_alpha``, ``other_alpha`` parameters.
+  With probability ``regime_prob`` the returned SCM is a
+  :class:`ContinuousRegimeSwitchingSCM`; the rest of the interface
+  (``(scm, n_vars, A_topo, Y_topo, hidden_topo)``) is unchanged.
+  ``ContinuousExtendedPrior.generate_sample`` automatically pre-samples
+  a shared regime trajectory whenever the SCM exposes
+  ``_draw_regime_trajectory``, so counterfactual pair mode works for
+  both stationary and regime-switching samples uniformly.
+- **Plumbing**: new ``--regime-prob`` and ``--regime-count-range`` CLI
+  flags on ``scripts/ct_train.py``, new ``prior.regime_prob`` and
+  ``prior.regime_count_range`` keys in
+  ``configs/continuous_default.yaml``.
+
+### Not yet implemented (phase 9+)
 
 - DREAM4 (or similar) in-silico gene-regulatory-network benchmark as
-  a third synthetic eval dataset.
+  a third synthetic-but-realistic eval dataset.
 - GatedDeltaProduct continuous-time encoder backend (currently only
   the Transformer backend is wired through the `times` / `t_int_start`
   path end to end).
-- Non-stationary / regime-switching continuous-time prior (analogue of
-  CausalTimePrior's 15% regime-switching slice; today the CT prior is
-  stationary within a trajectory).
+- Seeded Dirichlet sampling for the transition matrix (current fallback
+  uses a Wilson-Hilferty approximation of Gamma samples when a
+  `torch.Generator` is supplied, which is mildly biased for small
+  concentration values).
 
 ### Quick example: end-to-end training (Python API)
 

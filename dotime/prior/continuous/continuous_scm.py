@@ -245,8 +245,14 @@ class ContinuousSCM:
         x0: Optional[torch.Tensor] = None,
         noise: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
+        regime_trajectory: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the SCM forward on a given observation schedule.
+
+        ``regime_trajectory`` is accepted but ignored by this base class;
+        the argument is kept for interface parity with
+        :class:`dotime.prior.continuous.regime_switching.ContinuousRegimeSwitchingSCM`
+        so the extended prior can dispatch both SCM types uniformly.
 
         Parameters
         ----------

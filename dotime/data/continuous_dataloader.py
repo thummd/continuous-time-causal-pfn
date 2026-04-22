@@ -108,6 +108,10 @@ class ContinuousTemporalInterventionDataLoader:
         n_max_prior: int = 10,
         edge_prob: float = 0.3,
         hidden_prob: float = 0.0,
+        regime_prob: float = 0.0,
+        regime_count_range: tuple = (2, 3),
+        sticky_alpha: float = 9.0,
+        other_alpha: float = 0.5,
     ) -> None:
         """Construct the loader.
 
@@ -157,6 +161,10 @@ class ContinuousTemporalInterventionDataLoader:
                 n_max_prior=n_max_prior,
                 edge_prob=edge_prob,
                 hidden_prob=hidden_prob,
+                regime_prob=regime_prob,
+                regime_count_range=regime_count_range,
+                sticky_alpha=sticky_alpha,
+                other_alpha=other_alpha,
                 **common_kwargs,
             )
         else:
