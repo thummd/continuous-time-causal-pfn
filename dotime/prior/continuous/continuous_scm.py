@@ -293,6 +293,7 @@ class ContinuousSCM:
         noise: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
         regime_trajectory: Optional[torch.Tensor] = None,
+        substeps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the SCM forward on a given observation schedule.
 
@@ -315,13 +316,20 @@ class ContinuousSCM:
             Initial state ``X(times[0])`` of shape ``(n_vars,)``.
             Defaults to zeros.
         noise : torch.Tensor, optional
-            Pre-sampled noise increments of shape ``(T - 1, n_vars)``.
-            Passing this in lets callers share a noise realisation
-            between paired simulations -- this is the mechanism used by
+            Pre-sampled noise increments of shape
+            ``((T - 1) * substeps, n_vars)``.  Passing this in lets
+            callers share a noise realisation between paired simulations
+            -- this is the mechanism used by
             :meth:`sample_counterfactual_pair` to produce true
             counterfactual rather than interventional pairs.
         generator : torch.Generator, optional
             Only used when ``noise`` is not provided.
+        substeps : int
+            Number of Euler--Maruyama integration steps per observation
+            gap.  ``substeps=1`` (the default) recovers the original
+            one-step-per-gap behaviour.  Higher values subdivide each
+            gap into equally-sized fine steps; the trajectory is only
+            recorded at the original observation times.
 
         Returns
         -------
@@ -337,11 +345,13 @@ class ContinuousSCM:
                 f"dts must be 1-D of length T - 1, got shape {tuple(dts.shape)} for T = {times.numel()}"
             )
         T = times.numel()
+        n_fine = (T - 1) * substeps
+
         if noise is None:
-            noise = self._draw_noise(T - 1, generator=generator)
-        elif noise.shape != (T - 1, self.n_vars):
+            noise = self._draw_noise(n_fine, generator=generator)
+        elif noise.shape != (n_fine, self.n_vars):
             raise ValueError(
-                f"noise has shape {tuple(noise.shape)}, expected ({T - 1}, {self.n_vars})"
+                f"noise has shape {tuple(noise.shape)}, expected ({n_fine}, {self.n_vars})"
             )
 
         if x0 is None:
@@ -349,19 +359,26 @@ class ContinuousSCM:
         else:
             x = x0.to(device=self.device, dtype=self.dtype).clone()
 
-        trajectory = torch.empty(T, self.n_vars, device=self.device, dtype=self.dtype)
-        trajectory[0] = x
-        for i in range(T - 1):
+        # Build fine grid: subdivide each observation gap into `substeps`
+        # equal parts.  Observation times sit at indices [0, S, 2S, ...].
+        dts_fine = dts.repeat_interleave(substeps) / substeps
+        times_fine = torch.cat([times[:1], times[0] + torch.cumsum(dts_fine, dim=0)])
+
+        trajectory_fine = torch.empty(n_fine + 1, self.n_vars, device=self.device, dtype=self.dtype)
+        trajectory_fine[0] = x
+        for i in range(n_fine):
             x = self._step(
                 x,
-                dts[i],
+                dts_fine[i],
                 noise[i],
                 intervention=intervention,
-                t_next=float(times[i + 1].item()),
+                t_next=float(times_fine[i + 1].item()),
             )
-            trajectory[i + 1] = x
+            trajectory_fine[i + 1] = x
 
-        return times, trajectory
+        # Read out values at observation times only.
+        obs_indices = torch.arange(T, device=self.device) * substeps
+        return times, trajectory_fine[obs_indices]
 
     def sample_counterfactual_pair(
         self,
@@ -370,6 +387,7 @@ class ContinuousSCM:
         intervention: ContinuousIntervention,
         x0: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
+        substeps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return matched ``(times, X_obs, X_cf)`` with shared noise.
 
@@ -384,9 +402,9 @@ class ContinuousSCM:
         fresh noise for the interventional run and thus returns
         interventional rather than counterfactual semantics.
         """
-        noise = self._draw_noise(times.numel() - 1, generator=generator)
-        _, x_obs = self.simulate(times, dts, intervention=None, x0=x0, noise=noise)
-        _, x_cf = self.simulate(times, dts, intervention=intervention, x0=x0, noise=noise)
+        noise = self._draw_noise((times.numel() - 1) * substeps, generator=generator)
+        _, x_obs = self.simulate(times, dts, intervention=None, x0=x0, noise=noise, substeps=substeps)
+        _, x_cf = self.simulate(times, dts, intervention=intervention, x0=x0, noise=noise, substeps=substeps)
         return times, x_obs, x_cf
 
     def sample_interventional_pair(
@@ -396,6 +414,7 @@ class ContinuousSCM:
         intervention: ContinuousIntervention,
         x0: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
+        substeps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return matched ``(times, X_obs, X_int)`` with independent noise.
 
@@ -407,6 +426,6 @@ class ContinuousSCM:
         :meth:`sample_counterfactual_pair` for individual-level
         counterfactual training.
         """
-        _, x_obs = self.simulate(times, dts, intervention=None, x0=x0, generator=generator)
-        _, x_int = self.simulate(times, dts, intervention=intervention, x0=x0, generator=generator)
+        _, x_obs = self.simulate(times, dts, intervention=None, x0=x0, generator=generator, substeps=substeps)
+        _, x_int = self.simulate(times, dts, intervention=intervention, x0=x0, generator=generator, substeps=substeps)
         return times, x_obs, x_int

@@ -116,6 +116,7 @@ class ContinuousTemporalInterventionDataLoader:
         p_neural: float = 0.0,
         neural_hidden_dim: int = 8,
         neural_out_scale_range: tuple = (0.5, 2.0),
+        substeps: int = 1,
     ) -> None:
         """Construct the loader.
 
@@ -180,6 +181,7 @@ class ContinuousTemporalInterventionDataLoader:
                 tscm_structure=tscm_structure,
                 **common_kwargs,
             )
+        self.prior.substeps = substeps
 
     def __len__(self) -> int:
         return self.num_steps

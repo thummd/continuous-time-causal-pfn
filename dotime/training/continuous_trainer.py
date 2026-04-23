@@ -144,6 +144,7 @@ def train_continuous(
     n_queries: int = 1,
     query_mode: str = "single",
     eval_num_steps: int = 20,
+    substeps: int = 1,
     early_stop_patience: int = 0,
     wandb_project: Optional[str] = None,
     wandb_entity: Optional[str] = None,
@@ -277,6 +278,7 @@ def train_continuous(
                 weight_scale=weight_scale,
                 intervention_value_scale=intervention_value_scale,
                 intervention_window_frac=intervention_window_frac,
+                substeps=substeps,
             ),
         )
         bar_dist, borders = calibrate_bar_distribution(cal_loader, n_buckets=n_buckets)
@@ -316,6 +318,7 @@ def train_continuous(
         weight_scale=weight_scale,
         intervention_value_scale=intervention_value_scale,
         intervention_window_frac=intervention_window_frac,
+        substeps=substeps,
     )
 
     train_loader = ContinuousTemporalInterventionDataLoader(

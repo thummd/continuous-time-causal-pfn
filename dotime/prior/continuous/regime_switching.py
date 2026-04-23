@@ -357,6 +357,7 @@ class ContinuousRegimeSwitchingSCM:
         noise: Optional[torch.Tensor] = None,
         regime_trajectory: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
+        substeps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the regime-switching SCM forward on the given schedule.
 
@@ -377,11 +378,13 @@ class ContinuousRegimeSwitchingSCM:
                 f"shape mismatch: times={tuple(times.shape)}, dts={tuple(dts.shape)}"
             )
         T = times.numel()
+        n_fine = (T - 1) * substeps
+
         if noise is None:
-            noise = self._draw_noise(T - 1, generator=generator)
-        elif noise.shape != (T - 1, self.n_vars):
+            noise = self._draw_noise(n_fine, generator=generator)
+        elif noise.shape != (n_fine, self.n_vars):
             raise ValueError(
-                f"noise has shape {tuple(noise.shape)}, expected ({T - 1}, {self.n_vars})"
+                f"noise has shape {tuple(noise.shape)}, expected ({n_fine}, {self.n_vars})"
             )
         if regime_trajectory is None:
             regime_trajectory = self._draw_regime_trajectory(T, generator=generator)
@@ -396,24 +399,28 @@ class ContinuousRegimeSwitchingSCM:
         else:
             x = x0.to(device=self.device, dtype=self.dtype).clone()
 
-        trajectory = torch.empty(T, self.n_vars, device=self.device, dtype=self.dtype)
-        trajectory[0] = x
-        for i in range(T - 1):
-            # Active regime governing the step i -> i+1 is the regime at
-            # time i (Euler-Maruyama is explicit, so start-of-step drift
-            # / diffusion parameters are what we use).
-            r = int(regime_trajectory[i].item())
+        # Build fine grid and expand regime trajectory so each obs gap's
+        # substeps use the same regime.
+        dts_fine = dts.repeat_interleave(substeps) / substeps
+        times_fine = torch.cat([times[:1], times[0] + torch.cumsum(dts_fine, dim=0)])
+        regime_fine = regime_trajectory[:-1].repeat_interleave(substeps)
+
+        trajectory_fine = torch.empty(n_fine + 1, self.n_vars, device=self.device, dtype=self.dtype)
+        trajectory_fine[0] = x
+        for i in range(n_fine):
+            r = int(regime_fine[i].item())
             x = self.regimes[r]._step(
                 x,
-                dts[i],
+                dts_fine[i],
                 noise[i],
                 intervention=intervention,
-                t_next=float(times[i + 1].item()),
+                t_next=float(times_fine[i + 1].item()),
             )
-            trajectory[i + 1] = x
+            trajectory_fine[i + 1] = x
 
         self.last_regime_trajectory = regime_trajectory
-        return times, trajectory
+        obs_indices = torch.arange(T, device=self.device) * substeps
+        return times, trajectory_fine[obs_indices]
 
     def sample_counterfactual_pair(
         self,
@@ -422,6 +429,7 @@ class ContinuousRegimeSwitchingSCM:
         intervention: ContinuousIntervention,
         x0: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
+        substeps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return matched ``(times, X_obs, X_cf)`` with shared noise + regimes.
 
@@ -433,15 +441,17 @@ class ContinuousRegimeSwitchingSCM:
         before ``intervention.t_start``) intact across regime switches.
         """
         T = times.numel()
-        noise = self._draw_noise(T - 1, generator=generator)
+        noise = self._draw_noise((T - 1) * substeps, generator=generator)
         regime_trajectory = self._draw_regime_trajectory(T, generator=generator)
         _, x_obs = self.simulate(
             times, dts, intervention=None,
             x0=x0, noise=noise, regime_trajectory=regime_trajectory,
+            substeps=substeps,
         )
         _, x_cf = self.simulate(
             times, dts, intervention=intervention,
             x0=x0, noise=noise, regime_trajectory=regime_trajectory,
+            substeps=substeps,
         )
         return times, x_obs, x_cf
 
@@ -452,13 +462,16 @@ class ContinuousRegimeSwitchingSCM:
         intervention: ContinuousIntervention,
         x0: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
+        substeps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return matched ``(times, X_obs, X_int)`` with independent noise /
         regime draws for obs vs int runs."""
         _, x_obs = self.simulate(
             times, dts, intervention=None, x0=x0, generator=generator,
+            substeps=substeps,
         )
         _, x_int = self.simulate(
             times, dts, intervention=intervention, x0=x0, generator=generator,
+            substeps=substeps,
         )
         return times, x_obs, x_int

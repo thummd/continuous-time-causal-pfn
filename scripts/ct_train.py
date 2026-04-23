@@ -113,6 +113,10 @@ def main() -> None:
     parser.add_argument("--intervention-value-scale", type=float, default=None)
     parser.add_argument("--t-range", type=int, nargs=2, default=None, metavar=("LO", "HI"))
     parser.add_argument("--n-queries", type=int, default=None)
+    parser.add_argument(
+        "--substeps", type=int, default=None,
+        help="EM integration substeps per observation gap (1=naive, 10=fine-grid)",
+    )
 
     # Wandb
     parser.add_argument("--wandb-project", type=str, default=None)
@@ -193,6 +197,7 @@ def main() -> None:
         target_key=t.get("target_key", "Y_true"),
         n_queries=args.n_queries or t.get("n_queries", 1),
         query_mode=t.get("query_mode", "single"),
+        substeps=args.substeps if args.substeps is not None else p.get("substeps", 1),
         early_stop_patience=t.get("early_stop_patience", 0),
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,

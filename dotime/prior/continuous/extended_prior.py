@@ -298,6 +298,7 @@ class ContinuousExtendedPrior:
         self._seed = seed
         self._torch_gen = torch.Generator().manual_seed(seed)
         self._np_rng = np.random.RandomState(seed)
+        self.substeps = 1  # default; overridable by caller / subclass
 
     # ------------------------------------------------------------------ hook
 
@@ -415,7 +416,9 @@ class ContinuousExtendedPrior:
         #    the noise (and, for regime-switching SCMs, the regime
         #    trajectory) up front so that the counterfactual path can
         #    share them with the interventional simulation below.
-        shared_noise = scm._draw_noise(times.numel() - 1, generator=self._torch_gen)
+        shared_noise = scm._draw_noise(
+            (times.numel() - 1) * self.substeps, generator=self._torch_gen,
+        )
         shared_regime_traj = None
         if hasattr(scm, "_draw_regime_trajectory"):
             shared_regime_traj = scm._draw_regime_trajectory(
@@ -424,6 +427,7 @@ class ContinuousExtendedPrior:
         _, X_obs_raw = scm.simulate(
             times, dts, intervention=None,
             noise=shared_noise, regime_trajectory=shared_regime_traj,
+            substeps=self.substeps,
         )
 
         # 5. Compute int_onset_idx and derive pre-intervention stats
@@ -459,10 +463,12 @@ class ContinuousExtendedPrior:
             _, X_int_raw = scm.simulate(
                 times, dts, intervention=intervention,
                 noise=shared_noise, regime_trajectory=shared_regime_traj,
+                substeps=self.substeps,
             )
         else:
             _, X_int_raw = scm.simulate(
                 times, dts, intervention=intervention, generator=self._torch_gen,
+                substeps=self.substeps,
             )
         X_obs = X_obs_raw
         X_int = X_int_raw

@@ -53,6 +53,7 @@ prior:
   theta_range: [0.5, 2.0]     # OU mean-reversion rate prior.
   sigma_range: [0.2, 0.6]     # OU diffusion coefficient prior.
   weight_scale: 0.5           # Gaussian std on parental weights.
+  substeps: 1                 # EM integration substeps per obs gap (1=naive, 10=fine-grid).
 
 training:
   batch_size: 32
