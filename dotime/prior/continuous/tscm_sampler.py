@@ -153,6 +153,7 @@ class ContinuousTSCMSampler:
         generator: Optional[torch.Generator] = None,
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float32,
+        vectorize: bool = False,
     ) -> ContinuousSCM:
         """Draw a random :class:`ContinuousSCM` with the stored topology.
 
@@ -180,4 +181,4 @@ class ContinuousTSCMSampler:
                     dtype=dtype,
                 )
             )
-        return ContinuousSCM(mechanisms, device=device, dtype=dtype)
+        return ContinuousSCM(mechanisms, device=device, dtype=dtype, vectorize=vectorize)

@@ -117,6 +117,7 @@ class ContinuousTemporalInterventionDataLoader:
         neural_hidden_dim: int = 8,
         neural_out_scale_range: tuple = (0.5, 2.0),
         substeps: int = 1,
+        vectorize: bool = False,
     ) -> None:
         """Construct the loader.
 
@@ -182,6 +183,7 @@ class ContinuousTemporalInterventionDataLoader:
                 **common_kwargs,
             )
         self.prior.substeps = substeps
+        self.prior.vectorize = vectorize
 
     def __len__(self) -> int:
         return self.num_steps

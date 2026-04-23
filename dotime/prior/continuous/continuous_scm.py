@@ -114,6 +114,7 @@ class ContinuousSCM:
         mechanisms: Sequence[MechanismLike],
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float32,
+        vectorize: bool = False,
     ) -> None:
         if len(mechanisms) == 0:
             raise ValueError("ContinuousSCM requires at least one mechanism")
@@ -128,6 +129,38 @@ class ContinuousSCM:
         self.n_vars = len(mechanisms)
         self.device = device
         self.dtype = dtype
+        self.vectorize = vectorize
+
+        # Precompute vectorized arrays when the flag is set.
+        self._all_linear = False
+        self._all_neural = False
+
+        if vectorize:
+            self._all_linear = all(isinstance(m, OUMechanism) for m in mechanisms)
+            if self._all_linear:
+                n = self.n_vars
+                theta_vec = torch.empty(n, device=device, dtype=dtype)
+                sigma_vec = torch.empty(n, device=device, dtype=dtype)
+                max_parents = max((len(m.parents) for m in mechanisms), default=0)
+                parent_idx = torch.zeros(n, max(max_parents, 1), device=device, dtype=torch.long)
+                parent_wt = torch.zeros(n, max(max_parents, 1), device=device, dtype=dtype)
+                parent_mask = torch.zeros(n, max(max_parents, 1), device=device, dtype=dtype)
+                for v, mech in enumerate(mechanisms):
+                    theta_vec[v] = mech.theta
+                    sigma_vec[v] = mech.sigma
+                    for k, u in enumerate(mech.parents):
+                        parent_idx[v, k] = u
+                        parent_wt[v, k] = mech.parent_weights[k].item()
+                        parent_mask[v, k] = 1.0
+                self._theta_vec = theta_vec
+                self._sigma_vec = sigma_vec
+                self._parent_idx = parent_idx
+                self._parent_wt = parent_wt
+                self._parent_mask = parent_mask
+
+            self._all_neural = all(isinstance(m, NeuralDriftMechanism) for m in mechanisms)
+            if self._all_neural:
+                self._neural_params = self._prepare_neural_params()
 
     # ------------------------------------------------------------------ sampling
 
@@ -146,6 +179,7 @@ class ContinuousSCM:
         generator: Optional[torch.Generator] = None,
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float32,
+        vectorize: bool = False,
     ) -> "ContinuousSCM":
         """Sample a random continuous-time SCM.
 
@@ -213,7 +247,7 @@ class ContinuousSCM:
                         dtype=dtype,
                     )
                 )
-        return cls(mechs, device=device, dtype=dtype)
+        return cls(mechs, device=device, dtype=dtype, vectorize=vectorize)
 
     # ------------------------------------------------------------------ helpers
 
@@ -233,6 +267,53 @@ class ContinuousSCM:
         noise = torch.empty(num_steps, self.n_vars, device=self.device, dtype=self.dtype)
         noise.normal_(mean=0.0, std=1.0, generator=generator)
         return noise
+
+    def _prepare_neural_params(self) -> dict:
+        """Stack all NeuralDriftMechanism parameters into padded tensors for bmm."""
+        n = self.n_vars
+        hidden = self.mechanisms[0].W1.shape[0]
+        max_parents = max(len(m.parents) for m in self.mechanisms)
+        max_in = 1 + max(max_parents, 0)
+
+        theta = torch.tensor([m.theta for m in self.mechanisms], device=self.device, dtype=self.dtype)
+        sigma = torch.tensor([m.sigma for m in self.mechanisms], device=self.device, dtype=self.dtype)
+        out_scale = torch.tensor([m.out_scale for m in self.mechanisms], device=self.device, dtype=self.dtype)
+
+        W1 = torch.zeros(n, hidden, max_in, device=self.device, dtype=self.dtype)
+        b1 = torch.zeros(n, hidden, device=self.device, dtype=self.dtype)
+        W2 = torch.zeros(n, 1, hidden, device=self.device, dtype=self.dtype)
+        b2 = torch.zeros(n, 1, device=self.device, dtype=self.dtype)
+        parent_idx = torch.full((n, max(max_parents, 1)), -1, device=self.device, dtype=torch.long)
+
+        for v, m in enumerate(self.mechanisms):
+            in_dim = 1 + len(m.parents)
+            W1[v, :, :in_dim] = m.W1.to(device=self.device, dtype=self.dtype)
+            b1[v] = m.b1.to(device=self.device, dtype=self.dtype)
+            W2[v] = m.W2.to(device=self.device, dtype=self.dtype)
+            b2[v] = m.b2.to(device=self.device, dtype=self.dtype)
+            for j, u in enumerate(m.parents):
+                parent_idx[v, j] = u
+
+        return dict(
+            theta=theta, sigma=sigma, out_scale=out_scale,
+            W1=W1, b1=b1, W2=W2, b2=b2,
+            parent_idx=parent_idx, max_in=max_in,
+        )
+
+    def _neural_drift_batched(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute all n_vars neural drifts in one batched matmul."""
+        p = self._neural_params
+        n = x.shape[0]
+        inp = torch.zeros(n, p["max_in"], device=x.device, dtype=x.dtype)
+        inp[:, 0] = x
+        pi = p["parent_idx"]
+        n_pa = pi.shape[1]
+        parent_vals = x[pi.clamp(min=0)] * (pi >= 0).to(x.dtype)
+        inp[:, 1:1 + n_pa] = parent_vals
+        # Batched 2-layer tanh MLP: h = tanh(W1 @ inp + b1), out = tanh(W2 @ h + b2)
+        h = torch.tanh(torch.bmm(p["W1"], inp.unsqueeze(-1)).squeeze(-1) + p["b1"])
+        nn_out = torch.tanh(torch.bmm(p["W2"], h.unsqueeze(-1)).squeeze(-1) + p["b2"]).squeeze(-1)
+        return -p["theta"] * x + p["out_scale"] * nn_out
 
     def _step(
         self,
@@ -366,15 +447,91 @@ class ContinuousSCM:
 
         trajectory_fine = torch.empty(n_fine + 1, self.n_vars, device=self.device, dtype=self.dtype)
         trajectory_fine[0] = x
-        for i in range(n_fine):
-            x = self._step(
-                x,
-                dts_fine[i],
-                noise[i],
-                intervention=intervention,
-                t_next=float(times_fine[i + 1].item()),
-            )
-            trajectory_fine[i + 1] = x
+
+        if self._all_linear:
+            # Vectorized OU path: replace per-variable Python loop with
+            # gather + elementwise ops.  Avoids matmul to guarantee
+            # bit-exact parity with the _step() loop path.
+            #
+            # drift_v = -theta_v * x_v + sum_k(w_{v,k} * x[parent_{v,k}])
+            tv = self._theta_vec      # (n,)
+            sv = self._sigma_vec      # (n,)
+            pidx = self._parent_idx   # (n, max_parents)
+            pwt = self._parent_wt     # (n, max_parents)
+            pmask = self._parent_mask  # (n, max_parents)
+            for i in range(n_fine):
+                dt_i = dts_fine[i]
+                t_next = float(times_fine[i + 1].item())
+                sqrt_dt = torch.sqrt(dt_i)
+
+                # Gather parent values: x_pa[v, k] = x[parent_idx[v, k]]
+                x_pa = x[pidx]                          # (n, max_parents)
+                # Weighted sum: for each v, sum_k(w * x_pa * mask)
+                parent_drift = (pwt * x_pa * pmask).sum(dim=1)  # (n,)
+                drift = -tv * x + parent_drift
+
+                # Soft intervention: add delta to drift of target variable.
+                if (
+                    intervention is not None
+                    and intervention.is_active(t_next)
+                    and intervention.kind is InterventionKind.SOFT
+                ):
+                    drift[intervention.target] = drift[intervention.target] + float(
+                        intervention.eval_value(t_next)
+                    )
+
+                x = x + drift * dt_i + sv * sqrt_dt * noise[i]
+
+                # Hard / time-varying: overwrite target after the EM step.
+                if (
+                    intervention is not None
+                    and intervention.is_active(t_next)
+                    and intervention.kind
+                    in (InterventionKind.HARD, InterventionKind.TIME_VARYING)
+                ):
+                    x[intervention.target] = float(intervention.eval_value(t_next))
+
+                trajectory_fine[i + 1] = x
+        elif self._all_neural:
+            # Vectorized neural path: batched bmm replaces per-variable loop.
+            sv = self._neural_params["sigma"]
+            for i in range(n_fine):
+                dt_i = dts_fine[i]
+                t_next = float(times_fine[i + 1].item())
+                sqrt_dt = torch.sqrt(dt_i)
+
+                drift = self._neural_drift_batched(x)
+
+                if (
+                    intervention is not None
+                    and intervention.is_active(t_next)
+                    and intervention.kind is InterventionKind.SOFT
+                ):
+                    drift[intervention.target] = drift[intervention.target] + float(
+                        intervention.eval_value(t_next)
+                    )
+
+                x = x + drift * dt_i + sv * sqrt_dt * noise[i]
+
+                if (
+                    intervention is not None
+                    and intervention.is_active(t_next)
+                    and intervention.kind
+                    in (InterventionKind.HARD, InterventionKind.TIME_VARYING)
+                ):
+                    x[intervention.target] = float(intervention.eval_value(t_next))
+
+                trajectory_fine[i + 1] = x
+        else:
+            for i in range(n_fine):
+                x = self._step(
+                    x,
+                    dts_fine[i],
+                    noise[i],
+                    intervention=intervention,
+                    t_next=float(times_fine[i + 1].item()),
+                )
+                trajectory_fine[i + 1] = x
 
         # Read out values at observation times only.
         obs_indices = torch.arange(T, device=self.device) * substeps

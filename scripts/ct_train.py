@@ -117,6 +117,10 @@ def main() -> None:
         "--substeps", type=int, default=None,
         help="EM integration substeps per observation gap (1=naive, 10=fine-grid)",
     )
+    parser.add_argument(
+        "--vectorize", action="store_true", default=False,
+        help="Use vectorized simulate (bmm for neural, gather for OU)",
+    )
 
     # Wandb
     parser.add_argument("--wandb-project", type=str, default=None)
@@ -198,6 +202,7 @@ def main() -> None:
         n_queries=args.n_queries or t.get("n_queries", 1),
         query_mode=t.get("query_mode", "single"),
         substeps=args.substeps if args.substeps is not None else p.get("substeps", 1),
+        vectorize=args.vectorize or p.get("vectorize", False),
         early_stop_patience=t.get("early_stop_patience", 0),
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,

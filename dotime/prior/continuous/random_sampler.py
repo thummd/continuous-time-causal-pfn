@@ -162,6 +162,7 @@ class RandomContinuousSCMSampler:
     def sample(
         self,
         generator: Optional[torch.Generator] = None,
+        vectorize: bool = False,
     ) -> tuple:
         """Return ``(scm, n_vars, A_topo, Y_topo, hidden_topo)``.
 
@@ -213,6 +214,7 @@ class RandomContinuousSCMSampler:
                 neural_hidden_dim=self.neural_hidden_dim,
                 neural_out_scale_range=self.neural_out_scale_range,
                 generator=self._torch_gen,
+                vectorize=vectorize,
             )
 
         a_idx, y_idx = _pick_intervention_and_outcome(n_vars, self._np_rng)
@@ -314,6 +316,7 @@ class RandomContinuousExtendedPrior(ContinuousExtendedPrior):
     def _sample_scm_context(self) -> _SampledSCMContext:
         scm, n_vars, a_idx, y_idx, hidden_topo = self.random_sampler.sample(
             generator=self._torch_gen,
+            vectorize=self.vectorize,
         )
         return _SampledSCMContext(
             scm=scm,

@@ -299,6 +299,7 @@ class ContinuousExtendedPrior:
         self._torch_gen = torch.Generator().manual_seed(seed)
         self._np_rng = np.random.RandomState(seed)
         self.substeps = 1  # default; overridable by caller / subclass
+        self.vectorize = False  # default; overridable by caller / subclass
 
     # ------------------------------------------------------------------ hook
 
@@ -310,7 +311,7 @@ class ContinuousExtendedPrior:
         default implementation returns the fixed-TSCM metadata cached on
         ``self.sampler``.
         """
-        scm = self.sampler.sample(generator=self._torch_gen)
+        scm = self.sampler.sample(generator=self._torch_gen, vectorize=self.vectorize)
         return _SampledSCMContext(
             scm=scm,
             n_vars=self.sampler.n_vars,

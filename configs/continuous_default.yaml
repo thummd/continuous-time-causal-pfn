@@ -24,7 +24,7 @@ model:
   n_buckets: 1000             # bar head only: number of bucket borders sampled from the prior
 
 prior:
-  mode: tscm                  # tscm | random
+  mode: random                # tscm | random
   # Random-graph mode only:
   n_min_prior: 3
   n_max_prior: 10
@@ -32,13 +32,13 @@ prior:
   hidden_prob: 0.0            # 0.0 = all nodes observed; >0 hides non-(A,Y) nodes i.i.d.
   regime_prob: 0.0            # Fraction of random-graph samples drawn from a regime-switching SCM.
   regime_count_range: [2, 3]  # Uniform prior on the number of regimes R per regime-switching sample.
-  mechanism_kind: linear      # linear (OU, default) | neural (small MLP drift) | mixed.
+  mechanism_kind: neural      # linear (OU, default) | neural (small MLP drift) | mixed.
   p_neural: 0.0               # Per-variable neural-drift probability when mechanism_kind == mixed.
   neural_hidden_dim: 8        # Hidden width of the MLP drift.
   neural_out_scale_range: [0.5, 2.0]  # Uniform prior on the MLP output gain.
   # TSCM-structured mode only:
   tscm_structure: back_door   # one of: back_door, front_door, instrumental_variable, rct_no_confounding, ...
-  schedule: regular           # regular | jittered | exponential
+  schedule: jittered          # regular | jittered | exponential
   dt: 1.0                     # Regular / jittered spacing (units match the OU time scale).
   jitter: 0.3                 # Fraction of ``dt`` for uniform jitter (jittered schedule only).
   exp_rate: 1.0               # Rate of the Poisson schedule (exponential only).
@@ -53,7 +53,8 @@ prior:
   theta_range: [0.5, 2.0]     # OU mean-reversion rate prior.
   sigma_range: [0.2, 0.6]     # OU diffusion coefficient prior.
   weight_scale: 0.5           # Gaussian std on parental weights.
-  substeps: 1                 # EM integration substeps per obs gap (1=naive, 10=fine-grid).
+  substeps: 10                # EM integration substeps per obs gap (1=naive, 10=fine-grid).
+  vectorize: true             # Use vectorized simulate (bmm for neural, gather for OU).
 
 training:
   batch_size: 32
