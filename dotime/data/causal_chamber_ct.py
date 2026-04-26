@@ -9,19 +9,24 @@ continuous-time fields (absolute ``times``, ``dts``, ``t_int_start``,
 :class:`ContinuousTemporalEncoder`) without re-implementing the
 loading logic.
 
-The CausalChamber ``lt_walks_v1`` data is sampled at roughly 10 Hz
-(the exact rate varies experiment to experiment, typically 7-10 Hz).
-We convert integer step indices to physical seconds by multiplying by
-``dt_seconds`` (default ``0.1`` s = 10 Hz), matching the typical
-sampling rate reported in Gamella et al. 2024.
+Time grid
+---------
+When ``episode['timestamps']`` is present (the loader extracts it from
+the raw recording's ``timestamp`` column), we use the real, possibly
+irregular timestamps -- zero-anchored to the start of the episode.
+This preserves the actual sampling jitter, which in
+``lt_walks_v1/actuators_white`` spans 0.2-3.0 s gaps within the same
+recording.  When ``timestamps`` is missing (e.g. synthetic mock
+episodes in tests) we fall back to a uniform grid at ``dt_seconds``
+(default ``0.1`` s).
 
 Intervention window
 -------------------
 CausalChamber interventions are actuator setpoint changes that occur
 (nearly) instantaneously between two samples.  We represent this as a
-hard intervention with a short window ``[t_intervention, t_intervention
-+ dt_seconds * intervention_width_steps)`` so the continuous encoder
-sees a non-empty window.  ``intervention_width_steps=2`` by default.
+hard intervention spanning ``intervention_width_steps`` samples on the
+real timeline: ``[times[onset], times[onset + width])``.
+``intervention_width_steps=2`` by default.
 
 Import safety
 -------------
@@ -70,8 +75,9 @@ def build_causal_chamber_batch(
     n_max : int
         Variable-axis padding (should match the model's ``n_max``).
     dt_seconds : float
-        Sampling interval in seconds.  Defaults to ``0.1`` (10 Hz) to
-        match the typical ``lt_walks_v1`` rate.
+        Fallback sampling interval in seconds, used only when
+        ``episode['timestamps']`` is absent.  Defaults to ``0.1``
+        (10 Hz) for backward compatibility with synthetic episodes.
     intervention_width_steps : int
         Number of observation steps spanned by the intervention
         window.  Two steps is a short pulse around the setpoint
@@ -111,13 +117,25 @@ def build_causal_chamber_batch(
     # trajectory used as the source of ground-truth query values.
     X_full = np.concatenate([X_obs, X_post], axis=0)                 # (T_total, N)
 
-    # Absolute times: uniform grid at dt_seconds.
-    times_np = np.arange(T_total, dtype=np.float32) * dt_seconds
+    # Absolute times: prefer real (possibly irregular) timestamps
+    # from the recording; fall back to a uniform dt_seconds grid for
+    # synthetic episodes that lack a ``timestamps`` field.
+    if "timestamps" in episode and episode["timestamps"] is not None:
+        ts_raw = np.asarray(episode["timestamps"], dtype=np.float64)
+        if ts_raw.shape[0] != T_total:
+            raise ValueError(
+                f"episode['timestamps'] has length {ts_raw.shape[0]} "
+                f"but X_obs+X_post has length {T_total}",
+            )
+        times_np = (ts_raw - ts_raw[0]).astype(np.float32)
+    else:
+        times_np = np.arange(T_total, dtype=np.float32) * dt_seconds
     dts_np = np.diff(times_np)
 
     int_onset_idx = T_obs  # first step of X_post = intervention onset
     t_int_start = float(times_np[int_onset_idx])
-    t_int_end = t_int_start + dt_seconds * int(intervention_width_steps)
+    end_idx = min(int_onset_idx + int(intervention_width_steps), T_total - 1)
+    t_int_end = float(times_np[end_idx])
 
     span = float(times_np[-1] - times_np[0]) or 1.0
     t_int_start_norm = (t_int_start - float(times_np[0])) / span
@@ -224,12 +242,15 @@ def load_chamber_episodes(
     post_window: int = 20,
     max_experiments: Optional[int] = None,
     max_episodes: Optional[int] = None,
+    experiment_name: Optional[str] = None,
 ) -> List[Dict]:
     """Convenience wrapper: load + extract episodes in one call.
 
     Parameters mirror :class:`CausalChamberLoader`.  ``max_experiments``
     and ``max_episodes`` cap the amount of data loaded, which is useful
-    for smoke tests.
+    for smoke tests.  ``experiment_name`` restricts loading to a single
+    experiment within the dataset (e.g. ``"actuators_white"``); when
+    ``None`` all experiments are concatenated.
     """
     loader = _lazy_loader(
         dataset_name=dataset_name,
@@ -238,6 +259,13 @@ def load_chamber_episodes(
         download=download,
     )
     experiments = loader.list_experiments()
+    if experiment_name is not None:
+        if experiment_name not in experiments:
+            raise ValueError(
+                f"experiment {experiment_name!r} not in dataset {dataset_name!r}; "
+                f"available: {experiments}",
+            )
+        experiments = [experiment_name]
     if max_experiments is not None:
         experiments = experiments[:max_experiments]
 

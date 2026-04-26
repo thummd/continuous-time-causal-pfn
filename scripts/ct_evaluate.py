@@ -96,7 +96,18 @@ def main() -> None:
     )
     parser.add_argument(
         "--chamber-dt-seconds", type=float, default=0.1,
-        help="Inter-sample spacing in seconds (10 Hz default)",
+        help=(
+            "Fallback inter-sample spacing in seconds, used only when "
+            "the dataset's real timestamps are missing (10 Hz default)."
+        ),
+    )
+    parser.add_argument(
+        "--chamber-experiment", type=str, default="actuators_white",
+        help=(
+            "Restrict CausalChamber loading to a single experiment "
+            "(e.g. actuators_white, color_mix, smooth_polarizers). "
+            "Pass an empty string to load all experiments."
+        ),
     )
     parser.add_argument("--device", default=None)
     parser.add_argument(
@@ -161,6 +172,7 @@ def main() -> None:
             dataset_name=args.chamber_dataset,
             root=args.chamber_root,
             max_episodes=args.chamber_max_episodes,
+            experiment_name=args.chamber_experiment or None,
         )
         if not episodes:
             raise SystemExit(

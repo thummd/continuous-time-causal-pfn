@@ -78,6 +78,7 @@ class CausalChamberLoader:
         var_cols = [v for v in self.subgraph_vars if v in df.columns]
         data = df[var_cols].values  # (T_total, N_sub)
         intervention_col = df["intervention"].values if "intervention" in df.columns else None
+        timestamps = df["timestamp"].values if "timestamp" in df.columns else None
 
         # Find intervention changepoints (where actuator values change significantly)
         actuator_cols = [i for i, v in enumerate(var_cols) if v in LT_ACTUATORS]
@@ -108,7 +109,7 @@ class CausalChamberLoader:
             # Post-intervention data
             X_post = data[cp: cp + post_window]  # (post_window, N_sub)
 
-            episodes.append({
+            episode = {
                 'X_obs': X_obs,
                 'X_post': X_post,
                 'intervention_var': int_var_name,
@@ -116,7 +117,12 @@ class CausalChamberLoader:
                 'intervention_value': int_value,
                 'changepoint': cp,
                 'var_names': var_cols,
-            })
+            }
+            if timestamps is not None:
+                episode['timestamps'] = np.asarray(
+                    timestamps[cp - obs_window: cp + post_window], dtype=np.float64,
+                )
+            episodes.append(episode)
 
         return episodes
 

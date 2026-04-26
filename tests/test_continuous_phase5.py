@@ -263,6 +263,55 @@ def test_iter_causal_chamber_batches_yields_one_per_episode():
     assert len(batches) == 3
 
 
+def test_chamber_adapter_uses_real_irregular_timestamps():
+    """When episode['timestamps'] is present, the adapter must use it
+    instead of synthesising a uniform dt_seconds grid."""
+    ep = _synthetic_chamber_episode(T_obs=10, T_post=8)
+    T_total = ep["X_obs"].shape[0] + ep["X_post"].shape[0]
+
+    # Strictly increasing but irregular timestamps spanning 0.0 .. ~8.5 s.
+    rng = np.random.RandomState(1234)
+    gaps = 0.1 + rng.rand(T_total - 1) * 0.9  # gaps in [0.1, 1.0]
+    ts = np.concatenate([[0.5], 0.5 + np.cumsum(gaps)])  # offset start to test zero-anchoring
+    ep["timestamps"] = ts.astype(np.float64)
+
+    width = 3
+    batch = build_causal_chamber_batch(
+        ep,
+        query_var="red",
+        n_max=N_MAX,
+        dt_seconds=0.1,  # should be ignored when timestamps present
+        intervention_width_steps=width,
+    )
+
+    onset = int(batch["int_onset_idx"][0].item())
+    times = batch["times"][0].numpy()
+    dts = batch["dts"][0].numpy()
+
+    # Zero-anchored: first time should be 0.
+    assert times[0] == pytest.approx(0.0, abs=1e-5)
+    # Real (irregular) gaps preserved, not the synthetic 0.1 s grid.
+    assert dts.std() > 1e-3
+    expected_dts = (ts[1:] - ts[:-1]).astype(np.float32)
+    np.testing.assert_allclose(dts, expected_dts, atol=1e-5)
+    # t_int_start matches times[onset]; t_int_end matches times[onset + width].
+    assert float(batch["t_int_start"][0].item()) == pytest.approx(times[onset], abs=1e-5)
+    end_idx = min(onset + width, T_total - 1)
+    assert float(batch["t_int_end"][0].item()) == pytest.approx(times[end_idx], abs=1e-5)
+
+
+def test_chamber_adapter_falls_back_to_dt_seconds_without_timestamps():
+    """Backward compat: synthetic episodes with no timestamps still get a
+    uniform dt_seconds grid."""
+    ep = _synthetic_chamber_episode(T_obs=10, T_post=8)
+    assert "timestamps" not in ep
+    batch = build_causal_chamber_batch(
+        ep, query_var="red", n_max=N_MAX, dt_seconds=0.25,
+    )
+    dts = batch["dts"][0].numpy()
+    assert np.allclose(dts, 0.25, atol=1e-6)
+
+
 # ---------------------------------------------------------------------- chamber evaluator
 
 
