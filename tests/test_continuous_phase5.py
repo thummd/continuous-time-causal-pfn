@@ -46,12 +46,29 @@ def _tiny_model(n_max: int = N_MAX) -> ContinuousDoOverTimePFN:
 
 
 def _synthetic_chamber_episode(T_obs: int = 40, T_post: int = 20, seed: int = 0) -> dict:
-    """Fabricate an episode dict with the same shape as CausalChamberLoader output."""
+    """Fabricate an episode dict with the same shape as CausalChamberLoader output.
+
+    Mirrors the Phase-12 contract: real ``CausalChamberLoader`` episodes
+    carry per-row ``timestamps_obs`` / ``timestamps_post`` arrays in
+    seconds-since-episode-start.  We synthesise an irregular schedule
+    around the real ``lt_walks_v1`` median (~0.147 s) with mild jitter
+    plus a few longer gaps.
+    """
     rng = np.random.RandomState(seed)
     var_names = ["pol_1", "red", "green", "blue", "osr_c"]
     N = len(var_names)
     X_obs = rng.randn(T_obs, N).astype(np.float32) * 0.1
     X_post = rng.randn(T_post, N).astype(np.float32) * 0.1 + 2.0
+
+    base_dt = 0.147
+    gaps = rng.uniform(base_dt - 0.005, base_dt + 0.005, size=T_obs + T_post - 1)
+    # Sprinkle in occasional jumbo gaps to mimic real chamber jitter.
+    for stride in (7, 13):
+        gaps[stride :: stride] = base_dt + 0.1
+    cumulative = np.concatenate(([0.0], np.cumsum(gaps))).astype(np.float32)
+    timestamps_obs = cumulative[:T_obs]
+    timestamps_post = cumulative[T_obs:]
+
     return {
         "X_obs": X_obs,
         "X_post": X_post,
@@ -61,6 +78,9 @@ def _synthetic_chamber_episode(T_obs: int = 40, T_post: int = 20, seed: int = 0)
         "var_names": var_names,
         "changepoint": T_obs,
         "experiment": f"synthetic_{seed}",
+        "timestamps_obs": timestamps_obs,
+        "timestamps_post": timestamps_post,
+        "intervention_dt": float(timestamps_post[0] - timestamps_obs[-1]),
     }
 
 

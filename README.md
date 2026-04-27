@@ -36,7 +36,7 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 11)
+### Current continuous-time module (phases 1 – 12)
 
 End-to-end **training** pipeline: config → CLI entry → prior →
 dataloader → model → loss → checkpoint.  The prior supports both
@@ -58,7 +58,7 @@ benchmarks:
 - **CausalChamber** (~10 Hz physical-system walks with known actuator
   interventions).
 
-269/269 tests pass in `tests/`.
+278/278 tests pass in `tests/`.
 
 Quick start — train:
 
@@ -476,10 +476,36 @@ PYTHONPATH=. python scripts/ct_train.py \
   bar head, Warfarin, Theophylline) pass unchanged under the
   default ``num_substeps=1``.
 
-### Not yet implemented (phase 12+)
+**Phase 12 — real CausalChamber timestamps (continuous-time eval fix)**
+(verified in `tests/test_continuous_phase12.py`):
 
-- Wire ``num_substeps`` through ``ContinuousExtendedPrior`` /
-  dataloader / trainer for end-to-end tier-(C) training runs.
+- Pre-Phase-12 the CT adapter discarded the per-row ``timestamp``
+  column from CausalChamber's ``lt_walks_v1`` and synthesised a
+  uniform 10 Hz grid (``np.arange * dt_seconds``). Real chamber data
+  is irregular (median gap ~0.147 s with occasional ~0.25 s jitter),
+  so the encoder was being fed a fake schedule -- exactly the
+  schedule conflation Definition 3.1 of the workshop paper critiques.
+- ``CausalChamberLoader.extract_episodes`` now slices the
+  ``timestamp`` column alongside the variable columns and attaches
+  per-row ``timestamps_obs``, ``timestamps_post``, and
+  ``intervention_dt`` arrays (seconds-since-episode-start) to each
+  episode dict.
+- ``build_causal_chamber_batch`` consumes these arrays directly:
+  ``times_np = concat(timestamps_obs, timestamps_post)``,
+  ``dts_np = diff(times_np)``. The intervention window now spans the
+  first ``intervention_width_steps`` post-intervention samples in
+  real time, not ``intervention_width_steps * dt_seconds``.
+- ``dt_seconds`` is retained as a fallback (with a clear warning) for
+  synthetic episodes that lack timestamps; real loader output never
+  hits that path.
+- Phase 12 tests cover: end-to-end timestamp propagation, irregular
+  ``dts`` reaching the encoder, intervention-window length tracking
+  real time, fallback warning, precedence (real timestamps take
+  priority over ``dt_seconds``), and rejection of corrupted inputs
+  (shape mismatch, duplicate timestamps).
+
+### Not yet implemented (phase 13+)
+
 - Jump priors (compound-Poisson / Levy) as an orthogonal
   continuous-time family alongside diffusions.
 - DREAM4 (or similar) in-silico gene-regulatory-network benchmark.

@@ -1,4 +1,4 @@
-"""Continuous-time adapter for CausalChamber episodes.
+r"""Continuous-time adapter for CausalChamber episodes.
 
 The discrete-time pipeline already has
 :class:`dotime.data.causal_chamber.CausalChamberLoader`, which loads
@@ -9,19 +9,36 @@ continuous-time fields (absolute ``times``, ``dts``, ``t_int_start``,
 :class:`ContinuousTemporalEncoder`) without re-implementing the
 loading logic.
 
-The CausalChamber ``lt_walks_v1`` data is sampled at roughly 10 Hz
-(the exact rate varies experiment to experiment, typically 7-10 Hz).
-We convert integer step indices to physical seconds by multiplying by
-``dt_seconds`` (default ``0.1`` s = 10 Hz), matching the typical
-sampling rate reported in Gamella et al. 2024.
+Real timestamps
+---------------
+CausalChamber ``lt_walks_v1`` exposes a per-row ``timestamp`` column
+(seconds, ``float64``), with median inter-row gap ~0.147 s but with
+genuine sampling jitter (some gaps reach ~0.25 s).  Earlier versions
+of this adapter discarded those values and synthesised a uniform 10 Hz
+grid (``np.arange * dt_seconds``), which is exactly the schedule
+conflation we critique in the workshop paper.  Phase 12 propagates the
+real per-row timestamps from
+:meth:`CausalChamberLoader.extract_episodes` through this adapter, so
+the encoder sees the same irregular schedule the chamber produced.
 
 Intervention window
 -------------------
-CausalChamber interventions are actuator setpoint changes that occur
-(nearly) instantaneously between two samples.  We represent this as a
-hard intervention with a short window ``[t_intervention, t_intervention
-+ dt_seconds * intervention_width_steps)`` so the continuous encoder
-sees a non-empty window.  ``intervention_width_steps=2`` by default.
+CausalChamber interventions are actuator set-point changes that occur
+(nearly) instantaneously between two samples.  We represent them as
+hard interventions on a window
+``[t_intervention, t_post[intervention_width_steps - 1]]`` -- the first
+``intervention_width_steps`` post-intervention samples -- so the window
+length tracks the actual chamber timing rather than a pretended
+uniform rate.  ``intervention_width_steps=2`` by default; widen if the
+actuator's physical transient spans more samples.
+
+Backward compatibility
+----------------------
+When an episode dict does not include the per-row timestamp arrays
+(e.g.\ tests using synthetic episodes), the adapter falls back to a
+uniform grid generated from ``dt_seconds`` and emits a one-time
+warning.  Real CausalChamber episodes from the loader always include
+the real timestamps; the fallback is for tests only.
 
 Import safety
 -------------
@@ -31,6 +48,7 @@ call time so unit tests can patch or skip when the package is missing.
 
 from __future__ import annotations
 
+import warnings
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
@@ -70,8 +88,11 @@ def build_causal_chamber_batch(
     n_max : int
         Variable-axis padding (should match the model's ``n_max``).
     dt_seconds : float
-        Sampling interval in seconds.  Defaults to ``0.1`` (10 Hz) to
-        match the typical ``lt_walks_v1`` rate.
+        Used **only** as a fallback when the episode dict lacks the
+        per-row ``timestamps_obs`` / ``timestamps_post`` arrays (e.g.
+        synthetic test episodes).  Real episodes from
+        :class:`CausalChamberLoader` always carry the actual chamber
+        timestamps and ignore this argument.
     intervention_width_steps : int
         Number of observation steps spanned by the intervention
         window.  Two steps is a short pulse around the setpoint
@@ -111,13 +132,56 @@ def build_causal_chamber_batch(
     # trajectory used as the source of ground-truth query values.
     X_full = np.concatenate([X_obs, X_post], axis=0)                 # (T_total, N)
 
-    # Absolute times: uniform grid at dt_seconds.
-    times_np = np.arange(T_total, dtype=np.float32) * dt_seconds
+    # Absolute times.  Prefer the per-row timestamps that the loader
+    # propagates (see Phase 12).  Fall back to a uniform grid only for
+    # synthetic episodes that do not carry timestamps.
+    if "timestamps_obs" in episode and "timestamps_post" in episode:
+        ts_obs = np.asarray(episode["timestamps_obs"], dtype=np.float32)
+        ts_post = np.asarray(episode["timestamps_post"], dtype=np.float32)
+        if ts_obs.shape != (T_obs,) or ts_post.shape != (T_post,):
+            raise ValueError(
+                "episode timestamp arrays have shape "
+                f"({ts_obs.shape}, {ts_post.shape}); expected "
+                f"(({T_obs},), ({T_post},)) to match X_obs / X_post"
+            )
+        # Re-anchor so times start at zero, matching the rest of the
+        # continuous-time pipeline (the prior generates trajectories
+        # starting at t = 0 and the encoder's Fourier embedding is
+        # centred on the intervention onset, so absolute offsets do
+        # not matter).
+        t0 = float(ts_obs[0])
+        times_np = np.concatenate([ts_obs - t0, ts_post - t0]).astype(np.float32)
+    else:
+        warnings.warn(
+            "CausalChamber episode lacks per-row timestamps; falling "
+            "back to a synthetic uniform grid at dt_seconds. This "
+            "ignores the real chamber sampling jitter and only matches "
+            "tests with hand-built episode dicts.",
+            stacklevel=2,
+        )
+        times_np = (np.arange(T_total, dtype=np.float32) * dt_seconds)
     dts_np = np.diff(times_np)
+    if dts_np.size > 0 and (dts_np <= 0).any():
+        raise ValueError(
+            "non-positive inter-observation gap in CausalChamber "
+            "timestamps -- check the source CSV"
+        )
 
     int_onset_idx = T_obs  # first step of X_post = intervention onset
     t_int_start = float(times_np[int_onset_idx])
-    t_int_end = t_int_start + dt_seconds * int(intervention_width_steps)
+    # Window length tracks real time: span the first
+    # ``intervention_width_steps`` post-intervention samples so the
+    # encoder sees a non-empty interval whose physical length matches
+    # the chamber's sampling cadence rather than a pretended 10 Hz.
+    width_offset = max(1, min(int(intervention_width_steps), T_post)) - 1
+    t_int_end_idx = int_onset_idx + width_offset
+    t_int_end = float(times_np[t_int_end_idx])
+    if t_int_end <= t_int_start:
+        # Edge case: the chosen window collapsed to a single point
+        # (e.g. T_post == 1).  Pad by the median observed gap to keep
+        # the encoder happy.
+        median_gap = float(np.median(dts_np)) if dts_np.size else 1.0
+        t_int_end = t_int_start + median_gap
 
     span = float(times_np[-1] - times_np[0]) or 1.0
     t_int_start_norm = (t_int_start - float(times_np[0])) / span

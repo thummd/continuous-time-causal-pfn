@@ -79,6 +79,18 @@ class CausalChamberLoader:
         data = df[var_cols].values  # (T_total, N_sub)
         intervention_col = df["intervention"].values if "intervention" in df.columns else None
 
+        # Real per-row physical timestamps (seconds).  CausalChamber
+        # ``lt_walks_v1`` exposes a ``timestamp`` float column; rows are
+        # nominally ~6.75 Hz with occasional ~0.25 s gaps (jitter from
+        # the chamber control loop).  Treating these as a uniform 10 Hz
+        # grid -- as previous versions of the CT adapter did -- is
+        # exactly the schedule conflation the workshop paper critiques,
+        # so we propagate the real values to downstream code.
+        if "timestamp" in df.columns:
+            timestamps_full = df["timestamp"].astype(float).values
+        else:
+            timestamps_full = None
+
         # Find intervention changepoints (where actuator values change significantly)
         actuator_cols = [i for i, v in enumerate(var_cols) if v in LT_ACTUATORS]
         if not actuator_cols:
@@ -108,7 +120,7 @@ class CausalChamberLoader:
             # Post-intervention data
             X_post = data[cp: cp + post_window]  # (post_window, N_sub)
 
-            episodes.append({
+            episode = {
                 'X_obs': X_obs,
                 'X_post': X_post,
                 'intervention_var': int_var_name,
@@ -116,7 +128,23 @@ class CausalChamberLoader:
                 'intervention_value': int_value,
                 'changepoint': cp,
                 'var_names': var_cols,
-            })
+            }
+            if timestamps_full is not None:
+                # Slice and re-anchor to seconds-since-episode-start so
+                # downstream code does not have to know that
+                # CausalChamber's raw timestamps live in some absolute
+                # epoch (~ 446 763 s in the v1 release).
+                ts_obs = timestamps_full[cp - obs_window: cp]
+                ts_post = timestamps_full[cp: cp + post_window]
+                t0 = float(ts_obs[0])
+                episode['timestamps_obs'] = (ts_obs - t0).astype(np.float32)
+                episode['timestamps_post'] = (ts_post - t0).astype(np.float32)
+                # Useful for downstream window construction: physical
+                # gap from the last pre-intervention sample to the
+                # first post-intervention sample.
+                episode['intervention_dt'] = float(ts_post[0] - ts_obs[-1])
+
+            episodes.append(episode)
 
         return episodes
 
