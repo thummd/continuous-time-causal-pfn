@@ -36,7 +36,7 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 12)
+### Current continuous-time module (phases 1 – 13b)
 
 End-to-end **training** pipeline: config → CLI entry → prior →
 dataloader → model → loss → checkpoint.  The prior supports both
@@ -58,7 +58,7 @@ benchmarks:
 - **CausalChamber** (~10 Hz physical-system walks with known actuator
   interventions).
 
-278/278 tests pass in `tests/`.
+289/289 tests pass in `tests/`.
 
 Quick start — train:
 
@@ -504,13 +504,38 @@ PYTHONPATH=. python scripts/ct_train.py \
   priority over ``dt_seconds``), and rejection of corrupted inputs
   (shape mismatch, duplicate timestamps).
 
-### Not yet implemented (phase 13+)
+**Phase 13b — zero-context training augmentation (PK-friendly priors)**
+(verified in `tests/test_continuous_phase13b.py`):
+
+- Pre-Phase-13b training samples always had at least 30% of the
+  trajectory as pre-intervention context.  PK adapters
+  (``build_theophylline_batch``, ``build_warfarin_batch``) emit
+  batches with ``int_onset_idx == 0`` because pharmacokinetic
+  datasets have no pre-dose observations, so the encoder was being
+  fed a regime it had never trained on.
+- ``ContinuousExtendedPrior`` (and its random-graph subclass)
+  gained a ``p_no_context: float = 0.0`` argument.  With that
+  probability per sample, the intervention is forced to start at
+  ``times[0]`` so the encoder sees an empty pre-intervention window
+  -- matching the PK eval regime exactly.  Hard, soft, and
+  time-varying interventions all work in this regime.
+- Plumbing: ``ContinuousTemporalInterventionDataLoader``,
+  ``train_continuous``, ``scripts/ct_train.py --p-no-context``,
+  ``configs/continuous_default.yaml: prior.p_no_context``.
+- Default behaviour preserved: ``p_no_context=0`` is exactly the
+  pre-Phase-13b distribution.  Phase 13b tests verify that no
+  zero-context samples are produced at p=0, all are zero-context at
+  p=1, and at p=0.5 the empirical fraction is in [0.40, 0.60].
+
+### Not yet implemented (phase 14+)
 
 - Jump priors (compound-Poisson / Levy) as an orthogonal
   continuous-time family alongside diffusions.
 - DREAM4 (or similar) in-silico gene-regulatory-network benchmark.
 - GatedDeltaProduct continuous-time encoder backend.
 - Nonlinear drifts inside regime-switching SCMs.
+- Phase 13a: synthetic pre-baseline padding in the PK adapters
+  (eval-side counterpart to Phase 13b).
 
 ### Quick example: end-to-end training (Python API)
 

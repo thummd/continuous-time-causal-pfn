@@ -260,6 +260,7 @@ class ContinuousExtendedPrior:
         sigma_range: tuple = (0.2, 0.6),
         weight_scale: float = 0.5,
         num_substeps: int = 1,
+        p_no_context: float = 0.0,
         seed: int = 42,
     ) -> None:
         if pair_mode not in ("counterfactual", "interventional"):
@@ -267,6 +268,10 @@ class ContinuousExtendedPrior:
         if not isinstance(num_substeps, int) or num_substeps < 1:
             raise ValueError(
                 f"num_substeps must be a positive int, got {num_substeps}"
+            )
+        if not 0.0 <= p_no_context <= 1.0:
+            raise ValueError(
+                f"p_no_context must be in [0, 1], got {p_no_context}"
             )
         if intervention_source not in ("prior", "positivity_aware"):
             raise ValueError(f"invalid intervention_source: {intervention_source!r}")
@@ -293,6 +298,7 @@ class ContinuousExtendedPrior:
         self.time_varying_profile = time_varying_profile
         self.soft_shift_scale = float(soft_shift_scale)
         self.num_substeps = int(num_substeps)
+        self.p_no_context = float(p_no_context)
 
         self.sampler = ContinuousTSCMSampler(
             structure=TSCMStructure(tscm_structure),
@@ -408,13 +414,29 @@ class ContinuousExtendedPrior:
         a_idx_topo = ctx.intervention_target_topo
         win_frac = float(self._np_rng.uniform(*self.intervention_window_frac))
         win_len = max(self.dt * 2, win_frac * span)
-        earliest_start = times[0].item() + 0.3 * span
-        latest_start = times[-1].item() - win_len
-        if latest_start <= earliest_start:
-            earliest_start = times[0].item() + 0.1 * span
-            latest_start = times[-1].item() - self.dt
-        t_int_start = float(self._np_rng.uniform(earliest_start, latest_start))
-        t_int_end = t_int_start + win_len
+
+        # Phase 13b: with probability ``p_no_context`` we force the
+        # intervention to start at the very first observation, so the
+        # encoder runs on an empty pre-intervention window.  This
+        # matches the regime that the PK adapters
+        # (``build_theophylline_batch``, ``build_warfarin_batch``) use
+        # at evaluation time -- training never saw such samples
+        # before, so the cross-variable mixer was extrapolating on
+        # those benchmarks.  Sampling 5--20% of training trajectories
+        # in this regime brings PK eval inside the training
+        # distribution at a small cost in the rich-context regime.
+        no_context = self._np_rng.rand() < self.p_no_context
+        if no_context:
+            t_int_start = float(times[0].item())
+            t_int_end = t_int_start + win_len
+        else:
+            earliest_start = times[0].item() + 0.3 * span
+            latest_start = times[-1].item() - win_len
+            if latest_start <= earliest_start:
+                earliest_start = times[0].item() + 0.1 * span
+                latest_start = times[-1].item() - self.dt
+            t_int_start = float(self._np_rng.uniform(earliest_start, latest_start))
+            t_int_end = t_int_start + win_len
         intervention_kind = self._sample_intervention_kind()
 
         # 4. Simulate X_obs (never sees the intervention).  Pre-sample
