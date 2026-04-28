@@ -187,6 +187,17 @@ def train_continuous(
                 "grad_clip": grad_clip, "eval_every": eval_every,
                 "target_key": target_key, "n_queries": n_queries,
                 "query_mode": query_mode, "seed": seed,
+                # Phase-10/11/13b knobs (searchable on wandb).
+                "mechanism_kind": mechanism_kind,
+                "p_neural": p_neural,
+                "neural_hidden_dim": neural_hidden_dim,
+                "neural_out_scale_range": list(neural_out_scale_range),
+                "num_substeps": num_substeps,
+                "p_no_context": p_no_context,
+                "prior_mode": prior_mode,
+                "edge_prob": edge_prob,
+                "hidden_prob": hidden_prob,
+                "regime_prob": regime_prob,
             },
         )
 
