@@ -2,8 +2,13 @@
 # Phase 13b: zero-context training augmentation grid on the GPU server.
 #
 # Submits a 3 x 2 = 6-cell training grid (p_no_context x mechanism_kind)
-# directly via background ``python ... &`` dispatch on the box's 4 GPUs.
-# Two waves: 4 jobs on cuda:0..3, then 2 jobs on cuda:0..1.
+# directly via background ``python ... &`` dispatch.
+#
+# GPU assignment is driven by the ``GPUS`` env var (comma-separated list).
+# Default targets ``cuda:0,cuda:2`` -- the two free slots on
+# aidf-svr-gpu04 when the box is shared with VLLM / sinkhorn / dennis's
+# own DoT-PFN runs on cuda:1 and cuda:3.  Cells are dispatched in waves
+# of size ``len(GPUS)``; the number of waves is ``ceil(6 / len(GPUS))``.
 #
 # Logs to wandb entity ``ct-cpfn``, project ``ct-cpfn-phase13b``.  Run
 # names encode the cell, e.g.\ ``p13b_pnc010_mixed_seed0``.
@@ -11,9 +16,13 @@
 # Usage (on the server, in an SSH session):
 #   export WANDB_API_KEY=...           # or `wandb login` once before running
 #   bash scripts/launch_phase13b.sh
+#   # or with explicit GPU subset:
+#   GPUS=cuda:0,cuda:2 bash scripts/launch_phase13b.sh
 #
 # Wall-clock estimate: 5000 steps at ~1-2 s/step on A100 ~= 1.5-3 h per
-# run.  4 parallel jobs / wave x 2 waves => ~3-6 h end-to-end.
+# run; with shared-GPU contention typically 2-4 h.
+#   - default 2-GPU config: 3 waves x ~3-4h = 9-12 h end-to-end
+#   - 4-GPU config:         2 waves x ~2-4h = 4-8 h end-to-end
 #
 # Mirrors the layout of ``do-over-time-pfn/scripts/run_sanity9.sh`` so
 # anyone familiar with the upstream pipeline can read this in one pass.
@@ -106,23 +115,43 @@ launch_cell() {
     echo "     PID=$!"
 }
 
-# -------------------- Wave 1: 4 cells on cuda:0..3 --------------------
-echo ""
-echo "=== Wave 1/2: pnc in {0.0, 0.1} x mech in {linear, mixed} ==="
-launch_cell "0.0" "linear" "0.0" "cuda:0"
-launch_cell "0.0" "mixed"  "0.5" "cuda:1"
-launch_cell "0.1" "linear" "0.0" "cuda:2"
-launch_cell "0.1" "mixed"  "0.5" "cuda:3"
-wait
-echo "Wave 1 complete."
+# Parse GPU list and dispatch the 6 cells round-robin in waves of len(GPUS).
+IFS=',' read -ra GPU_LIST <<< "${GPUS:-cuda:0,cuda:2}"
+N_GPUS=${#GPU_LIST[@]}
+if [ "${N_GPUS}" -lt 1 ]; then
+    echo "ERROR: GPUS must list at least one device" >&2
+    exit 1
+fi
 
-# -------------------- Wave 2: 2 cells on cuda:0..1 --------------------
+# Cell definitions (p_no_context, mechanism_kind, p_neural).
+CELLS=(
+    "0.0|linear|0.0"
+    "0.0|mixed|0.5"
+    "0.1|linear|0.0"
+    "0.1|mixed|0.5"
+    "0.2|linear|0.0"
+    "0.2|mixed|0.5"
+)
+
+n_cells=${#CELLS[@]}
+n_waves=$(( (n_cells + N_GPUS - 1) / N_GPUS ))
 echo ""
-echo "=== Wave 2/2: pnc=0.2 x mech in {linear, mixed} ==="
-launch_cell "0.2" "linear" "0.0" "cuda:0"
-launch_cell "0.2" "mixed"  "0.5" "cuda:1"
-wait
-echo "Wave 2 complete."
+echo "Plan: ${n_cells} cells across ${N_GPUS} GPU(s) (${GPU_LIST[*]}) in ${n_waves} wave(s)"
+
+for ((w=0; w<n_waves; w++)); do
+    echo ""
+    echo "=== Wave $((w + 1))/${n_waves} ==="
+    for ((g=0; g<N_GPUS; g++)); do
+        idx=$((w * N_GPUS + g))
+        if [ "${idx}" -ge "${n_cells}" ]; then
+            break
+        fi
+        IFS='|' read -r pnc mech pneural <<< "${CELLS[$idx]}"
+        launch_cell "${pnc}" "${mech}" "${pneural}" "${GPU_LIST[$g]}"
+    done
+    wait
+    echo "Wave $((w + 1)) complete."
+done
 
 echo ""
 echo "============================================================"
