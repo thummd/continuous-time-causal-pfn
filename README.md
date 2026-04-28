@@ -36,7 +36,7 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 13b)
+### Current continuous-time module (phases 1 – 13)
 
 End-to-end **training** pipeline: config → CLI entry → prior →
 dataloader → model → loss → checkpoint.  The prior supports both
@@ -58,7 +58,7 @@ benchmarks:
 - **CausalChamber** (~10 Hz physical-system walks with known actuator
   interventions).
 
-289/289 tests pass in `tests/`.
+308/308 tests pass in `tests/`.
 
 Quick start — train:
 
@@ -527,6 +527,35 @@ PYTHONPATH=. python scripts/ct_train.py \
   zero-context samples are produced at p=0, all are zero-context at
   p=1, and at p=0.5 the empirical fraction is in [0.40, 0.60].
 
+**Phase 13a — synthetic pre-baseline padding (PK eval-side fix)**
+(verified in `tests/test_continuous_phase13a.py`):
+
+- Eval-side counterpart to Phase 13b.  ``build_theophylline_batch``
+  and ``build_warfarin_batch`` gained ``pre_baseline_n: int = 0``
+  and ``pre_baseline_dt_hours: Optional[float] = None`` arguments.
+- When ``pre_baseline_n > 0``: the adapter prepends that many
+  synthetic pre-dose observations at uniformly spaced negative times
+  with all variables at zero baseline.  The padded ``X_obs_norm``
+  rows hold the (normalised) zero baseline so the encoder receives
+  real pre-intervention context; ``int_onset_idx`` shifts to the
+  first real (post-dose) observation.  ``t_int_start`` stays at 0
+  in absolute hours -- the dose still happens when it really did.
+- Default spacing: first post-dose gap (Theophylline) or median
+  union-grid gap (Warfarin), so the synthetic pre-window blends
+  smoothly into the real schedule.
+- Plumbing: ``scripts/ct_evaluate.py --pre-baseline-n N``
+  ``--pre-baseline-dt-hours H`` apply to ``--benchmark theophylline``
+  and ``--benchmark warfarin``.
+- 19 new tests cover backward compat (``pre_baseline_n=0`` matches
+  pre-Phase-13a behaviour exactly), the shifted ``int_onset_idx``,
+  default and explicit spacing, normalised baseline in pre-window
+  rows, post-window causal masking, real-observation Y_true
+  preservation, and shape contracts.
+
+This is the cheap fix that runs against any existing checkpoint
+without retraining.  Phase 13b is the more principled training-time
+counterpart and they can be combined.
+
 ### Not yet implemented (phase 14+)
 
 - Jump priors (compound-Poisson / Levy) as an orthogonal
@@ -534,8 +563,6 @@ PYTHONPATH=. python scripts/ct_train.py \
 - DREAM4 (or similar) in-silico gene-regulatory-network benchmark.
 - GatedDeltaProduct continuous-time encoder backend.
 - Nonlinear drifts inside regime-switching SCMs.
-- Phase 13a: synthetic pre-baseline padding in the PK adapters
-  (eval-side counterpart to Phase 13b).
 
 ### Quick example: end-to-end training (Python API)
 

@@ -60,6 +60,8 @@ def build_warfarin_batch(
     dose_scale: float = 0.01,
     conc_std_floor: float = 0.5,
     pca_std_floor: float = 5.0,
+    pre_baseline_n: int = 0,
+    pre_baseline_dt_hours: Optional[float] = None,
 ) -> Dict[str, torch.Tensor]:
     """Build a zero-shot CT batch dict for one Warfarin subject.
 
@@ -82,6 +84,19 @@ def build_warfarin_batch(
         Lower bounds on the per-variable normalisation std, to keep
         zero-shot predictions bounded when a subject's observation
         window is unusually flat.
+    pre_baseline_n : int
+        Phase-13a synthetic pre-baseline padding.  Number of fake
+        pre-dose observations to prepend at uniformly spaced negative
+        times, all at zero baseline (dose=0, cp=0, pca=0).  Gives the
+        encoder a real pre-intervention window in the regime its
+        training distribution was sampled from, at the cost of
+        inventing observations the subject did not have.  ``0``
+        (default) reproduces the zero-context behaviour.
+    pre_baseline_dt_hours : float, optional
+        Spacing between consecutive synthetic pre-baseline samples,
+        in hours.  Defaults to the median post-dose gap of the
+        subject's observation schedule so the synthetic pre-window
+        blends smoothly into the real one.
 
     Returns
     -------
@@ -95,13 +110,42 @@ def build_warfarin_batch(
         raise ValueError(f"n_max must be >= {_N_VARS}, got {n_max}")
     if subject.n_cp == 0 and subject.n_pca == 0:
         raise ValueError(f"subject {subject.subject_id} has no observations")
+    if pre_baseline_n < 0:
+        raise ValueError(f"pre_baseline_n must be >= 0, got {pre_baseline_n}")
 
     # 1. Union time grid for this subject (always includes 0.0).
-    times = _union_sorted_times(subject.cp_times, subject.pca_times)
+    real_times = _union_sorted_times(subject.cp_times, subject.pca_times)
+
+    # Phase-13a synthetic pre-baseline padding: prepend ``pre_baseline_n``
+    # fake pre-dose timesteps at uniformly spaced negative times so the
+    # encoder sees a non-empty pre-intervention window.
+    if pre_baseline_n > 0:
+        if pre_baseline_dt_hours is None:
+            if real_times.numel() >= 2:
+                # Median post-dose gap as a sensible default spacing.
+                gaps = real_times.diff()
+                pre_dt = float(gaps.median().item())
+            else:
+                pre_dt = 1.0
+        else:
+            pre_dt = float(pre_baseline_dt_hours)
+        if pre_dt <= 0:
+            raise ValueError(
+                f"pre_baseline_dt_hours must be positive; derived/passed value {pre_dt}"
+            )
+        pre_times = torch.tensor(
+            [-pre_dt * (pre_baseline_n - i) for i in range(pre_baseline_n)],
+            dtype=real_times.dtype,
+        )
+        times = torch.cat([pre_times, real_times])
+    else:
+        times = real_times
     T = times.numel()
 
-    # 2. Map observations into the union grid.  X_int holds the true
-    #    trajectories; X_obs is zero everywhere (no pre-dose context).
+    # 2. Map observations into the (possibly padded) grid.  X_int holds
+    #    the true post-dose trajectories; X_obs is zero everywhere (the
+    #    pre-baseline rows are zero by construction; post-dose rows are
+    #    causally masked to zero).
     def _map_to_grid(obs_times: torch.Tensor, obs_values: torch.Tensor) -> tuple:
         """Return (grid_indices, values) for each observation."""
         if obs_times.numel() == 0:
@@ -153,20 +197,32 @@ def build_warfarin_batch(
 
     X_obs_padded = _pad(X_obs)
     X_int_padded = _pad(X_full)
-    X_obs_norm_padded = torch.zeros_like(X_obs_padded)
+    # X_obs_norm: pre-baseline rows hold the (normalised) zero baseline
+    # so the encoder sees real pre-intervention context; post-dose rows
+    # are causally masked to zero, matching training.
+    if pre_baseline_n == 0:
+        X_obs_norm_padded = torch.zeros_like(X_obs_padded)
+    else:
+        X_obs_norm_padded = torch.zeros_like(X_obs_padded)
+        # Normalised zero baseline = (0 - mean) / std for each variable.
+        baseline_norm = (-means_padded) / stds_padded.clamp_min(1e-6)
+        X_obs_norm_padded[:pre_baseline_n] = baseline_norm
 
     variable_mask = torch.zeros(n_max, dtype=torch.float32)
     variable_mask[:_N_VARS] = 1.0
 
     # 5. Intervention spec.
     intervention_value_norm = dose_raw  # dose_scale already applied; std=1
-    t_int_start = 0.0
-    t_int_end = max(
-        float(absorption_window_hours),
-        float(times[1].item() - times[0].item()) if T >= 2 else 1.0,
+    t_int_start = 0.0  # the dose; pre-baseline rows live at t < 0
+    # Use the first POST-dose gap, not whatever sits between the
+    # pre-baseline and the dose.
+    real_first_post_gap = (
+        float(real_times[1].item() - real_times[0].item())
+        if real_times.numel() >= 2 else 1.0
     )
-    span = float(times[-1].item()) or 1.0
-    t_int_start_norm = 0.0
+    t_int_end = max(float(absorption_window_hours), real_first_post_gap)
+    span = float((times[-1] - times[0]).item()) or 1.0
+    t_int_start_norm = (t_int_start - float(times[0].item())) / max(span, 1e-6)
     t_int_end_norm = (t_int_end - float(times[0].item())) / span
 
     # 6. Per-observation queries (one batch entry per real observation).
@@ -206,7 +262,7 @@ def build_warfarin_batch(
         "_norm_stds": stds_padded.unsqueeze(0).expand(B, n_max).contiguous(),
         "times": times.unsqueeze(0).expand(B, T).contiguous(),
         "dts": times.diff().unsqueeze(0).expand(B, T - 1).contiguous(),
-        "int_onset_idx": torch.zeros(B, dtype=torch.long),
+        "int_onset_idx": torch.full((B,), pre_baseline_n, dtype=torch.long),
         "intervention_target": torch.full((B,), _DOSE_IDX, dtype=torch.long),
         "intervention_type": torch.zeros(B, dtype=torch.long),  # HARD
         "intervention_value": torch.full((B,), intervention_value_norm, dtype=torch.float32),

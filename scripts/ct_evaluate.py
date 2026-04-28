@@ -111,6 +111,22 @@ def main() -> None:
         "--dose-scale", type=float, default=1.0,
         help="Multiplier on the raw mg/kg dose before it enters the batch",
     )
+    parser.add_argument(
+        "--pre-baseline-n", type=int, default=0,
+        help="Phase-13a synthetic pre-baseline padding. Number of fake "
+             "pre-dose observations to prepend to each PK subject's "
+             "trajectory at uniformly spaced negative times. Brings "
+             "zero-context PK eval inside the training distribution. "
+             "0 (default) preserves the pre-Phase-13a behaviour. "
+             "Applies to --benchmark theophylline and warfarin only.",
+    )
+    parser.add_argument(
+        "--pre-baseline-dt-hours", type=float, default=None,
+        help="Spacing (hours) between consecutive synthetic "
+             "pre-baseline samples. Defaults to the first post-dose "
+             "gap (Theophylline) or the median union-grid gap "
+             "(Warfarin).",
+    )
     args = parser.parse_args()
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -126,6 +142,8 @@ def main() -> None:
             n_max=model.temporal_encoder.n_max,
             absorption_window_hours=args.absorption_window_hours,
             dose_scale=args.dose_scale,
+            pre_baseline_n=args.pre_baseline_n,
+            pre_baseline_dt_hours=args.pre_baseline_dt_hours,
         )
         print(format_summary(result))
         payload = metrics_to_dict(result)
@@ -145,6 +163,8 @@ def main() -> None:
             n_max=model.temporal_encoder.n_max,
             absorption_window_hours=args.warfarin_absorption_hours,
             dose_scale=args.warfarin_dose_scale,
+            pre_baseline_n=args.pre_baseline_n,
+            pre_baseline_dt_hours=args.pre_baseline_dt_hours,
         )
         print(warfarin_format_summary(result))
         payload = warfarin_metrics_to_dict(result)

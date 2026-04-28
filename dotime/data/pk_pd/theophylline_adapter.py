@@ -78,6 +78,8 @@ def build_theophylline_batch(
     fixed_means: Optional[Tuple[float, float]] = None,
     fixed_stds: Optional[Tuple[float, float]] = None,
     conc_std_floor: float = 0.5,
+    pre_baseline_n: int = 0,
+    pre_baseline_dt_hours: Optional[float] = None,
 ) -> Dict[str, torch.Tensor]:
     """Build a batch dict for one subject containing one query per post-dose observation.
 
@@ -112,6 +114,20 @@ def build_theophylline_batch(
     conc_std_floor : float
         Lower bound on the concentration normalisation std to avoid
         exploding predictions for subjects with very flat trajectories.
+    pre_baseline_n : int
+        Phase-13a synthetic pre-baseline padding.  Number of fake
+        pre-dose observations to prepend to the subject's trajectory
+        at uniformly spaced negative times, all at zero baseline
+        (dose=0, concentration=0).  These give the encoder real
+        pre-intervention context that matches its training
+        distribution, at the cost of inventing observations the
+        subject did not actually have.  ``0`` (default) preserves the
+        zero-context behaviour (no padding).
+    pre_baseline_dt_hours : float, optional
+        Spacing between consecutive synthetic pre-baseline samples,
+        in hours.  Defaults to the first post-dose gap
+        ``times[1] - times[0]`` so the synthetic schedule blends
+        smoothly into the real one.
 
     Returns
     -------
@@ -126,13 +142,46 @@ def build_theophylline_batch(
         raise ValueError("fixed_means and fixed_stds required for normalize_from='fixed'")
     if n_max < _N_VARS:
         raise ValueError(f"n_max must be >= {_N_VARS}, got {n_max}")
+    if pre_baseline_n < 0:
+        raise ValueError(f"pre_baseline_n must be >= 0, got {pre_baseline_n}")
 
-    times = subject.times
+    real_times = subject.times
     concs = subject.concentrations
+    T_real = real_times.numel()
+
+    # Phase-13a synthetic pre-baseline padding.  Prepend ``pre_baseline_n``
+    # fake pre-dose observations at uniformly spaced negative times so the
+    # encoder receives a non-empty pre-intervention window.
+    if pre_baseline_n > 0:
+        if pre_baseline_dt_hours is None:
+            if T_real >= 2:
+                pre_dt = float((real_times[1] - real_times[0]).item())
+            else:
+                pre_dt = 0.5
+        else:
+            pre_dt = float(pre_baseline_dt_hours)
+        if pre_dt <= 0:
+            raise ValueError(
+                f"pre_baseline_dt_hours must be positive; derived/passed value {pre_dt}"
+            )
+        pre_times = torch.tensor(
+            [-pre_dt * (pre_baseline_n - i) for i in range(pre_baseline_n)],
+            dtype=real_times.dtype,
+        )
+        times = torch.cat([pre_times, real_times])
+        # Pre-dose concentrations are zero (no drug yet).  We expand the
+        # concs vector so downstream indexing is uniform over T.
+        concs_padded = torch.cat([torch.zeros(pre_baseline_n, dtype=concs.dtype), concs])
+    else:
+        times = real_times
+        concs_padded = concs
     T = times.numel()
 
     if query_time_indices is None:
-        query_time_indices = [i for i in range(T) if float(times[i].item()) > 0.0]
+        # ``query_time_indices`` always indexes into ``subject.times`` /
+        # ``concs`` (the real trajectory), so callers do not need to know
+        # about the synthetic pre-baseline offset.
+        query_time_indices = [i for i in range(T_real) if float(real_times[i].item()) > 0.0]
     query_time_indices = list(query_time_indices)
     if not query_time_indices:
         raise ValueError(f"subject {subject.subject_id} has no post-dose observations")
@@ -140,10 +189,10 @@ def build_theophylline_batch(
     B = len(query_time_indices)
 
     # -- shared-per-subject tensors (all queries share the same trajectory) --
-    X_obs_vars = torch.zeros(T, _N_VARS)  # no pre-dose observations
+    X_obs_vars = torch.zeros(T, _N_VARS)  # all zeros: pre-dose at baseline, post-dose causally masked
     X_int_vars = torch.zeros(T, _N_VARS)
     X_int_vars[:, _DOSE_IDX] = 0.0  # placeholder; concentration is the observable
-    X_int_vars[:, _CONC_IDX] = concs
+    X_int_vars[:, _CONC_IDX] = concs_padded
 
     # -- normalisation --
     if normalize_from == "peek_target":
@@ -163,9 +212,14 @@ def build_theophylline_batch(
     raw_stds[_CONC_IDX] = conc_std
 
     X_obs_norm_vars = (X_obs_vars - raw_means) / raw_stds
-    # Causal masking: X_obs zero after intervention onset -> all zero here.
-    # Applying the mask explicitly keeps us consistent with the training contract.
-    X_obs_norm_vars = X_obs_norm_vars * 0.0
+    # Causal masking: zero out X_obs from intervention onset onwards.
+    # Pre-baseline rows (rows < pre_baseline_n) keep their normalised
+    # baseline values so the encoder sees a real pre-intervention
+    # window; post-dose rows are masked to zero, matching training.
+    if pre_baseline_n == 0:
+        X_obs_norm_vars = X_obs_norm_vars * 0.0
+    else:
+        X_obs_norm_vars[pre_baseline_n:] = 0.0
 
     # -- pad variable axis to n_max --
     def _pad(X: torch.Tensor) -> torch.Tensor:
@@ -192,18 +246,24 @@ def build_theophylline_batch(
     # (mean, std) which for "peek_target" is (0, dose_scale).
     intervention_value_norm = (dose_raw - dose_mean) / max(dose_std, 1e-4)
 
-    t_int_start = 0.0
-    t_int_end = max(float(absorption_window_hours), float(times[1].item() * 0.5))
+    t_int_start = 0.0  # the dose; the synthetic pre-baseline lives at t < 0
+    # First post-dose gap; clamp so we always have a non-empty window.
+    first_post_gap = float(real_times[1].item() - real_times[0].item()) if T_real >= 2 else 1.0
+    t_int_end = max(float(absorption_window_hours), first_post_gap * 0.5)
     span = float((times[-1] - times[0]).item()) or 1.0
-    t_int_start_norm = 0.0
+    t_int_start_norm = (t_int_start - float(times[0].item())) / span
     t_int_end_norm = (t_int_end - float(times[0].item())) / span
-    int_onset_idx = 0
+    int_onset_idx = pre_baseline_n  # 0 if no padding; otherwise first post-dose row
 
     # -- per-query tensors --
-    q_idx = torch.tensor(query_time_indices, dtype=torch.long)
+    # ``query_time_indices`` indexes into ``real_times``; shift by the
+    # pre-baseline offset to land in the padded ``times`` array.
+    q_idx = torch.tensor(
+        [i + pre_baseline_n for i in query_time_indices], dtype=torch.long,
+    )
     q_times_abs = times[q_idx]
     q_times_norm = (q_times_abs - times[0]) / max(span, 1e-6)
-    q_concs = concs[q_idx]
+    q_concs = concs_padded[q_idx]
     q_concs_norm = torch.clamp((q_concs - conc_mean) / conc_std, -10.0, 10.0)
 
     batch: Dict[str, torch.Tensor] = {
