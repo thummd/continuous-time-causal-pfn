@@ -1,123 +1,131 @@
-#!/bin/bash
-# Submit Phase 13b training runs (zero-context augmentation) to a Slurm
-# cluster, logging to wandb under the ct-cpfn team.
+#!/usr/bin/env bash
+# Phase 13b: zero-context training augmentation grid on the GPU server.
 #
-# Usage:
-#   export ACCOUNT=<slurm_account>
-#   export WANDB_API_KEY=<...>          # or run `wandb login` once on the cluster
+# Submits a 3 x 2 = 6-cell training grid (p_no_context x mechanism_kind)
+# directly via background ``python ... &`` dispatch on the box's 4 GPUs.
+# Two waves: 4 jobs on cuda:0..3, then 2 jobs on cuda:0..1.
+#
+# Logs to wandb entity ``ct-cpfn``, project ``ct-cpfn-phase13b``.  Run
+# names encode the cell, e.g.\ ``p13b_pnc010_mixed_seed0``.
+#
+# Usage (on the server, in an SSH session):
+#   export WANDB_API_KEY=...           # or `wandb login` once before running
 #   bash scripts/launch_phase13b.sh
 #
-# What it submits
-# ---------------
-# A small grid that varies p_no_context and mechanism_kind, with the
-# rest of the prior held fixed.  Each cell is a single 5k-step training
-# run on the random-graph prior; the resulting checkpoints can then be
-# evaluated zero-shot on Theophylline / Warfarin / CausalChamber.
+# Wall-clock estimate: 5000 steps at ~1-2 s/step on A100 ~= 1.5-3 h per
+# run.  4 parallel jobs / wave x 2 waves => ~3-6 h end-to-end.
 #
-# Grid (3 x 2 = 6 runs)
-#   p_no_context in {0.0, 0.1, 0.2}
-#   mechanism_kind in {linear, mixed (p_neural=0.5)}
-#
-# To submit a single canonical run instead, scroll to "SINGLE_RUN" below.
-#
-# Wandb
-# -----
-# entity:  ct-cpfn   (the team you set up at https://wandb.ai/ct-cpfn)
-# project: ct-cpfn-phase13b
-# run name: encodes the cell, e.g. "p013b_pnc010_neural_seed0"
+# Mirrors the layout of ``do-over-time-pfn/scripts/run_sanity9.sh`` so
+# anyone familiar with the upstream pipeline can read this in one pass.
 
 set -euo pipefail
 
-PARTITION="${PARTITION:-alldlc2_gpu-l40s}"
-TIME_LIMIT="${TIME_LIMIT:-04:00:00}"
-TOTAL_STEPS="${TOTAL_STEPS:-5000}"
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)/.."
+REPO_DIR="$(cd "$REPO_DIR" && pwd)"
+
+# Configuration knobs (override via env if desired).
+STEPS="${TOTAL_STEPS:-5000}"
 SEED="${SEED:-0}"
+BATCH="${BATCH_SIZE:-32}"
 WANDB_PROJECT="${WANDB_PROJECT:-ct-cpfn-phase13b}"
 WANDB_ENTITY="${WANDB_ENTITY:-ct-cpfn}"
+N_MIN="${N_MIN_PRIOR:-3}"
+N_MAX_PRIOR="${N_MAX_PRIOR:-8}"
+EDGE_PROB="${EDGE_PROB:-0.3}"
+HIDDEN_PROB="${HIDDEN_PROB:-0.3}"
+NUM_SUBSTEPS="${NUM_SUBSTEPS:-8}"
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LOG_DIR="${REPO_ROOT}/logs/phase13b"
-CKPT_ROOT="${REPO_ROOT}/checkpoints/phase13b"
-mkdir -p "${LOG_DIR}" "${CKPT_ROOT}"
-
-if [[ -z "${ACCOUNT:-}" ]]; then
-    echo "ERROR: export ACCOUNT=<slurm account> first." >&2
+# Locate conda + activate the existing dotime-fullscale env.
+for cb in "$HOME/miniconda3" "$HOME/anaconda3" "/opt/miniconda3" "/opt/anaconda3"; do
+    if [ -f "$cb/etc/profile.d/conda.sh" ]; then CONDA_BASE="$cb"; break; fi
+done
+if [ -z "${CONDA_BASE:-}" ]; then
+    echo "ERROR: could not find conda installation" >&2
     exit 1
 fi
+# shellcheck disable=SC1091
+source "$CONDA_BASE/etc/profile.d/conda.sh"
+conda activate dotime-fullscale
 
-# ---- Grid definition ----
-P_NO_CONTEXTS=("0.0" "0.1" "0.2")
-MECHS=("linear" "mixed")
+if [ -z "${WANDB_API_KEY:-}" ]; then
+    echo "WARNING: WANDB_API_KEY not set in environment.  Either run"
+    echo "  wandb login   (interactive, recommended)"
+    echo "before launching, or export WANDB_API_KEY=... in the shell."
+    echo "Continuing in case ~/.netrc already has a token..."
+fi
 
-submit_run () {
-    local pnc="$1"          # p_no_context
-    local mech="$2"         # mechanism_kind
-    local pneural=0.0
-    if [[ "${mech}" == "mixed" ]]; then
-        pneural=0.5
-    fi
+LOG_DIR="${REPO_DIR}/logs/phase13b"
+CKPT_ROOT="${REPO_DIR}/checkpoints/phase13b"
+mkdir -p "${LOG_DIR}" "${CKPT_ROOT}"
 
+# Common args, mirroring the structure of run_sanity9.sh.
+COMMON_ARGS=(
+    "--config"          "${REPO_DIR}/configs/continuous_default.yaml"
+    "--prior-mode"      "random"
+    "--n-min-prior"     "${N_MIN}"
+    "--n-max-prior"     "${N_MAX_PRIOR}"
+    "--edge-prob"       "${EDGE_PROB}"
+    "--hidden-prob"     "${HIDDEN_PROB}"
+    "--num-substeps"    "${NUM_SUBSTEPS}"
+    "--total-steps"     "${STEPS}"
+    "--batch-size"      "${BATCH}"
+    "--seed"            "${SEED}"
+    "--wandb-project"   "${WANDB_PROJECT}"
+    "--wandb-entity"    "${WANDB_ENTITY}"
+)
+
+echo "============================================================"
+echo "Phase 13b: zero-context training augmentation grid"
+echo "  steps=${STEPS}, batch=${BATCH}, seed=${SEED}"
+echo "  prior=random N in [${N_MIN}, ${N_MAX_PRIOR}], edge_prob=${EDGE_PROB}"
+echo "  hidden_prob=${HIDDEN_PROB}, num_substeps=${NUM_SUBSTEPS}"
+echo "  wandb: ${WANDB_ENTITY}/${WANDB_PROJECT}"
+echo "  logs:  ${LOG_DIR}"
+echo "  ckpts: ${CKPT_ROOT}"
+echo "============================================================"
+
+# Each cell (p_no_context, mechanism_kind, p_neural).
+launch_cell() {
+    local pnc="$1" mech="$2" pneural="$3" device="$4"
     local pnc_tag
     pnc_tag=$(printf "%03d" "$(awk "BEGIN{print int(${pnc}*100)}")")
     local run_name="p13b_pnc${pnc_tag}_${mech}_seed${SEED}"
-    local save_dir="${CKPT_ROOT}/${run_name}"
-    local log_file="${LOG_DIR}/${run_name}.log"
-    mkdir -p "${save_dir}"
+    local save="${CKPT_ROOT}/${run_name}"
+    local log="${LOG_DIR}/${run_name}.log"
+    mkdir -p "${save}"
 
-    echo "Submitting ${run_name}  (p_no_context=${pnc}, mechanism=${mech}, p_neural=${pneural})"
-
-    sbatch --account="${ACCOUNT}" \
-           --partition="${PARTITION}" \
-           --job-name="${run_name}" \
-           --output="${log_file}" \
-           --error="${log_file}" \
-           --nodes=1 --ntasks=1 --cpus-per-task=4 --mem=24G \
-           --time="${TIME_LIMIT}" --gres=gpu:1 \
-           --wrap="cd ${REPO_ROOT} && \
-                   export PYTHONPATH=${REPO_ROOT}:\$PYTHONPATH && \
-                   python scripts/ct_train.py \
-                       --config configs/continuous_default.yaml \
-                       --prior-mode random \
-                       --n-min-prior 3 --n-max-prior 8 \
-                       --edge-prob 0.3 \
-                       --hidden-prob 0.3 \
-                       --mechanism-kind ${mech} \
-                       --p-neural ${pneural} \
-                       --p-no-context ${pnc} \
-                       --num-substeps 8 \
-                       --total-steps ${TOTAL_STEPS} \
-                       --seed ${SEED} \
-                       --save-dir ${save_dir} \
-                       --wandb-project ${WANDB_PROJECT} \
-                       --wandb-entity ${WANDB_ENTITY} \
-                       --wandb-run-name ${run_name}"
+    echo "  -> ${run_name} on ${device}  (p_no_context=${pnc}, mech=${mech}, p_neural=${pneural})"
+    PYTHONPATH="${REPO_DIR}" python "${REPO_DIR}/scripts/ct_train.py" "${COMMON_ARGS[@]}" \
+        --device "${device}" \
+        --mechanism-kind "${mech}" \
+        --p-neural "${pneural}" \
+        --p-no-context "${pnc}" \
+        --save-dir "${save}" \
+        --wandb-run-name "${run_name}" \
+        > "${log}" 2>&1 &
+    echo "     PID=$!"
 }
 
-for pnc in "${P_NO_CONTEXTS[@]}"; do
-    for mech in "${MECHS[@]}"; do
-        submit_run "${pnc}" "${mech}"
-    done
-done
+# -------------------- Wave 1: 4 cells on cuda:0..3 --------------------
+echo ""
+echo "=== Wave 1/2: pnc in {0.0, 0.1} x mech in {linear, mixed} ==="
+launch_cell "0.0" "linear" "0.0" "cuda:0"
+launch_cell "0.0" "mixed"  "0.5" "cuda:1"
+launch_cell "0.1" "linear" "0.0" "cuda:2"
+launch_cell "0.1" "mixed"  "0.5" "cuda:3"
+wait
+echo "Wave 1 complete."
 
-cat <<EOM
+# -------------------- Wave 2: 2 cells on cuda:0..1 --------------------
+echo ""
+echo "=== Wave 2/2: pnc=0.2 x mech in {linear, mixed} ==="
+launch_cell "0.2" "linear" "0.0" "cuda:0"
+launch_cell "0.2" "mixed"  "0.5" "cuda:1"
+wait
+echo "Wave 2 complete."
 
-Submitted $(( ${#P_NO_CONTEXTS[@]} * ${#MECHS[@]} )) jobs.
-Logs:        ${LOG_DIR}
-Checkpoints: ${CKPT_ROOT}
-Wandb:       https://wandb.ai/${WANDB_ENTITY}/${WANDB_PROJECT}
-
-# SINGLE_RUN: if you just want one canonical training run, run e.g.
-#
-#   sbatch --account="\${ACCOUNT}" --partition="${PARTITION}" \\
-#          --gres=gpu:1 --time=${TIME_LIMIT} --cpus-per-task=4 --mem=24G \\
-#          --wrap="cd ${REPO_ROOT} && PYTHONPATH=${REPO_ROOT} python scripts/ct_train.py \\
-#                  --config configs/continuous_default.yaml \\
-#                  --prior-mode random --n-min-prior 3 --n-max-prior 8 \\
-#                  --hidden-prob 0.3 --mechanism-kind mixed --p-neural 0.5 \\
-#                  --p-no-context 0.15 --num-substeps 8 \\
-#                  --total-steps 5000 --seed 0 \\
-#                  --save-dir ${CKPT_ROOT}/canonical \\
-#                  --wandb-project ${WANDB_PROJECT} \\
-#                  --wandb-entity ${WANDB_ENTITY} \\
-#                  --wandb-run-name p13b_canonical"
-EOM
+echo ""
+echo "============================================================"
+echo "Phase 13b complete: 6 checkpoints in ${CKPT_ROOT}/"
+echo "Wandb: https://wandb.ai/${WANDB_ENTITY}/${WANDB_PROJECT}"
+echo "============================================================"
