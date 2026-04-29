@@ -52,7 +52,7 @@ prior:
   intervention_window_frac: [0.1, 0.3]
   soft_shift_scale: 1.0
   time_varying_profile: random                 # step | ramp | sine | random
-  theta_range: [0.5, 2.0]     # OU mean-reversion rate prior.
+  theta_range: [0.5, 1.0]     # OU mean-reversion rate prior. Tightened (was 0.5..2.0) so theta * dt stays comfortably below the Euler--Maruyama stability boundary 2.0 even at jittered max dt; eliminates the integrator-driven blowups that pinned ~30-50% of pre-Phase-14 training batches at the y-norm clip ceiling.
   sigma_range: [0.2, 0.6]     # OU diffusion coefficient prior.
   weight_scale: 0.5           # Gaussian std on parental weights.
 

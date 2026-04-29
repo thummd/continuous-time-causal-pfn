@@ -42,7 +42,7 @@ N_MIN="${N_MIN_PRIOR:-3}"
 N_MAX_PRIOR="${N_MAX_PRIOR:-8}"
 EDGE_PROB="${EDGE_PROB:-0.3}"
 HIDDEN_PROB="${HIDDEN_PROB:-0.3}"
-NUM_SUBSTEPS="${NUM_SUBSTEPS:-8}"
+NUM_SUBSTEPS="${NUM_SUBSTEPS:-2}"
 
 # Locate conda + activate the existing dotime-fullscale env.
 for cb in "$HOME/miniconda3" "$HOME/anaconda3" "/opt/miniconda3" "/opt/anaconda3"; do
@@ -104,7 +104,10 @@ launch_cell() {
     mkdir -p "${save}"
 
     echo "  -> ${run_name} on ${device}  (p_no_context=${pnc}, mech=${mech}, p_neural=${pneural})"
-    PYTHONPATH="${REPO_DIR}" python "${REPO_DIR}/scripts/ct_train.py" "${COMMON_ARGS[@]}" \
+    # ``python -u`` flushes stdout/stderr line-by-line so per-run logs
+    # show training progress without buffering the first few hundred
+    # steps until eval-time -- matches do-over-time-pfn's run_sanity9 style.
+    PYTHONPATH="${REPO_DIR}" python -u "${REPO_DIR}/scripts/ct_train.py" "${COMMON_ARGS[@]}" \
         --device "${device}" \
         --mechanism-kind "${mech}" \
         --p-neural "${pneural}" \

@@ -377,7 +377,10 @@ def train_continuous(
         output = model(batch)
 
         y_max = float(batch["Y_true_norm"].abs().max().item())
-        if y_max > 20:  # extreme normalization edge case
+        # Y_NORM_CLIP is now 50; skip only the truly pathological steps
+        # that hit the ceiling (which under a stable prior should be
+        # vanishingly rare).
+        if y_max >= 49.5:
             continue
 
         loss = model.head.loss(output, batch["Y_true_norm"])

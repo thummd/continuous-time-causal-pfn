@@ -4,6 +4,19 @@ import torch
 from typing import Dict, Tuple
 
 
+# Outer bound on |Y_true_norm| (in units of pre-window std).  Raised
+# from the original ±10 to ±50 after the Phase 13b shakedown showed
+# that even with stable Euler--Maruyama, the prior occasionally
+# produces samples > 10 sigma from their pre-window mean -- usually
+# because a hard intervention lands ~5 sigma away and the chain of
+# parental weights with std ~0.5 amplifies it.  At ±10 the clip was
+# pinning ~30-50% of training batches at the ceiling and corrupting
+# the regression target distribution.  ±50 is loose enough that
+# legitimate samples never hit it; the trainer still skips truly
+# pathological steps via its own ``y_max > 100`` guard.
+Y_NORM_CLIP = 50.0
+
+
 def per_variable_normalize(
     X_obs: torch.Tensor,
     variable_mask: torch.Tensor,
@@ -71,7 +84,7 @@ def normalize_target(
     target_mean = means[batch_idx, query_target]
     target_std = stds[batch_idx, query_target]
     y_norm = (Y_true - target_mean) / target_std
-    return torch.clamp(y_norm, -10.0, 10.0)
+    return torch.clamp(y_norm, -Y_NORM_CLIP, Y_NORM_CLIP)
 
 
 def normalize_batch(
@@ -106,11 +119,16 @@ def normalize_batch(
 
     if target_key == "Y_causal_effect" and "Y_causal_effect" in batch:
         target_std = q_stds[q_idx, query_target]
-        Y_norm = torch.clamp(batch['Y_causal_effect'] / target_std, -10.0, 10.0)
+        Y_norm = torch.clamp(
+            batch['Y_causal_effect'] / target_std, -Y_NORM_CLIP, Y_NORM_CLIP,
+        )
     else:
         target_mean = q_means[q_idx, query_target]
         target_std = q_stds[q_idx, query_target]
-        Y_norm = torch.clamp((batch[target_key] - target_mean) / target_std, -10.0, 10.0)
+        Y_norm = torch.clamp(
+            (batch[target_key] - target_mean) / target_std,
+            -Y_NORM_CLIP, Y_NORM_CLIP,
+        )
 
     batch['Y_true_norm'] = Y_norm
     return batch
