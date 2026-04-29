@@ -9,14 +9,24 @@
 # "jittered" or "exponential" to evaluate irregular-sampling behaviour.
 
 model:
-  n_max: 16                   # Keep compact for PK/PD-scale experiments.
-  embed_size: 256             # 2x smaller than the discrete default for faster iteration.
+  # Max number of variables per sample. Sized to match prior.n_max_prior (10):
+  # the random-graph prior never produces more, so anything higher is wasted
+  # padding compute in every encoder forward. Real-data eval fits comfortably:
+  # Theophylline=2, Warfarin=3, CausalChamber LT/WT subgraphs=5/4.
+  n_max: 10
+  embed_size: 128             # 4x smaller than the discrete default (512) for faster iteration.
   n_heads: 4
+  # Per-variable transformer depth. 4 layers gives the encoder enough
+  # capacity for the random-DAG + neural-drift prior; with embed_size=128
+  # the FLOP cost is still ~4x below the discrete default.
   n_encoder_layers: 4
   n_cross_attn_heads: 4
-  context_window: 128
+  context_window: 128         # Fits prior t_range=[60,120] + intervention window.
   n_mixer_layers: 1
-  num_time_frequencies: 64    # Fourier features span five decades in time.
+  # Fourier features for continuous time. 32 still spans 5 decades
+  # (geometric grid in [time_min_freq, time_max_freq]) and halves the
+  # FourierTimeEmbedding output dim vs 64.
+  num_time_frequencies: 32
   time_min_freq: 0.01
   time_max_freq: 10.0
   tau_levels: [0.1, 0.25, 0.5, 0.75, 0.9]
@@ -38,29 +48,49 @@ prior:
   neural_out_scale_range: [0.5, 2.0]  # Uniform prior on the MLP output gain.
   # TSCM-structured mode only:
   tscm_structure: back_door   # one of: back_door, front_door, instrumental_variable, rct_no_confounding, ...
-  schedule: jittered          # regular | jittered | exponential
+  schedule: mixed             # regular | jittered | exponential | mixed (per-trajectory mixture)
   dt: 1.0                     # Regular / jittered spacing (units match the OU time scale).
   jitter: 0.3                 # Fraction of ``dt`` for uniform jitter (jittered schedule only).
   exp_rate: 1.0               # Rate of the Poisson schedule (exponential only).
   pair_mode: counterfactual   # counterfactual (shared noise) | interventional (independent noise)
   t_range: [60, 120]
   intervention_kind_probs: [0.5, 0.3, 0.2]    # hard / soft / time-varying
-  intervention_source: prior  # prior | positivity_aware
-  intervention_value_scale: 2.0
+  # positivity_aware clips the do-value to obs_mean +/- 3*sigma of the
+  # pre-intervention target. Combined with intervention_value_scale=1.0
+  # this keeps the effective intervention magnitude in z in [-3, +3] --
+  # matching the eval-time range that all three benchmarks present after
+  # per-subject / per-episode normalization (chamber: |z| max ~2.4;
+  # theophylline + warfarin adapters use peek_target normalization that
+  # puts Y_true_norm in roughly [-2, +2]). Old setting (prior + scale=2)
+  # produced training-time |z| with mean 5.5 and ~9% clipping at 10.
+  intervention_source: prior
+  intervention_value_scale: 1.0
   intervention_window_frac: [0.1, 0.3]
   soft_shift_scale: 1.0
   time_varying_profile: random                 # step | ramp | sine | random
-  theta_range: [0.5, 2.0]     # OU mean-reversion rate prior.
+  # OU mean-reversion rate prior. Capped at 0.5 so naive Euler-Maruyama
+  # (substeps=1, h=dt=1.0) keeps the self-loop multiplier (1 - theta*h)
+  # in [0.5, 0.9] -- variables retain inertia instead of oscillating /
+  # diverging and getting pinned at the +/-10 normalization ceiling.
+  # Old [0.5, 2.0] gave theta*h up to 2.0 -> sign-flipping every step,
+  # which produced ~100% clipped targets in all naive cells of grid_v3.
+  theta_range: [0.1, 0.5]
   sigma_range: [0.2, 0.6]     # OU diffusion coefficient prior.
-  weight_scale: 0.5           # Gaussian std on parental weights.
-  substeps: 10                # EM integration substeps per obs gap (1=naive, 10=fine-grid).
+  # Gaussian std on parental weights. Lowered from 0.5 because with
+  # edge_prob=0.3 and N up to 10, the drift matrix W had spectral radius
+  # comparable to theta, so multi-variable coupling exploded even under
+  # fine-grid integration (substeps=8) -- ~50% of fine-grid batches in
+  # grid_v3 still hit the clip ceiling. Lower weight_scale shrinks W's
+  # spectral radius and keeps the coupled system stable.
+  weight_scale: 0.3
+  substeps: 8                 # EM integration substeps per obs gap (1=naive, 8=fine-grid). Runner overrides per cell.
   vectorize: true             # Use vectorized simulate (bmm for neural, gather for OU).
 
 training:
-  batch_size: 32
+  batch_size: 24
   lr: 0.0002
   warmup_steps: 200
-  total_steps: 5000
+  total_steps: 10000
   weight_decay: 0.01
   grad_clip: 1.0
   eval_every: 500
