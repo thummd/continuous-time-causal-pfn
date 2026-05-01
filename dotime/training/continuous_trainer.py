@@ -94,6 +94,7 @@ def train_continuous(
     num_time_frequencies: int = 64,
     time_min_freq: float = 0.01,
     time_max_freq: float = 10.0,
+    positional_only: bool = False,
     tau_levels: Optional[List[float]] = None,
     head_type: str = "quantile",
     n_buckets: int = 1000,
@@ -171,6 +172,7 @@ def train_continuous(
                 "n_cross_attn_heads": n_cross_attn_heads,
                 "context_window": context_window, "n_mixer_layers": n_mixer_layers,
                 "num_time_frequencies": num_time_frequencies,
+                "positional_only": positional_only,
                 "tscm_structure": tscm_structure, "schedule": schedule,
                 "dt": dt, "jitter": jitter, "exp_rate": exp_rate,
                 "pair_mode": pair_mode, "t_range": list(t_range),
@@ -208,6 +210,7 @@ def train_continuous(
     else:
         print(f"   Prior: {tscm_structure}  |  schedule: {schedule}  |  pair_mode: {pair_mode}")
     print(f"   Intervention kind probs: {intervention_kind_probs}  |  source: {intervention_source}")
+    print(f"   positional_only: {positional_only}")
 
     # 1. Model.  Head choice supports "quantile" (default, no calibration)
     #    or "bar" (classification-as-regression, needs bucket borders
@@ -232,6 +235,7 @@ def train_continuous(
         num_time_frequencies=num_time_frequencies,
         time_min_freq=time_min_freq,
         time_max_freq=time_max_freq,
+        positional_only=positional_only,
     ).to(device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"   Parameters: {num_params:,}")
@@ -436,6 +440,7 @@ def train_continuous(
                             "num_time_frequencies": num_time_frequencies,
                             "time_min_freq": time_min_freq,
                             "time_max_freq": time_max_freq,
+                            "positional_only": positional_only,
                             "tau_levels": tau_levels,
                             "head_type": head_type,
                             "n_buckets": n_buckets,

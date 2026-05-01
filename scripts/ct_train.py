@@ -51,6 +51,15 @@ def main() -> None:
         "--n-buckets", type=int, default=None,
         help="Number of bar-distribution buckets (bar head only)",
     )
+    parser.add_argument(
+        "--positional-only", action="store_true", default=False,
+        help=(
+            "Strip real timestamps inside the model: encoder sees "
+            "arange(T) and the mixer's normalised time scalars are "
+            "recomputed from sequence indices.  Realises the "
+            "positional-encoder ablation tier from EXPERIMENT_PLAN_v2."
+        ),
+    )
 
     # Prior CLI overrides (most useful for ablations)
     parser.add_argument(
@@ -151,6 +160,7 @@ def main() -> None:
         num_time_frequencies=m.get("num_time_frequencies", 64),
         time_min_freq=m.get("time_min_freq", 0.01),
         time_max_freq=m.get("time_max_freq", 10.0),
+        positional_only=args.positional_only or m.get("positional_only", False),
         tau_levels=m.get("tau_levels"),
         head_type=args.head_type or m.get("head_type", "quantile"),
         n_buckets=args.n_buckets or m.get("n_buckets", 1000),
