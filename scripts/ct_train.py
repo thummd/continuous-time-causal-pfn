@@ -94,7 +94,8 @@ def main() -> None:
     )
     parser.add_argument("--tscm-structure", type=str, default=None)
     parser.add_argument(
-        "--schedule", type=str, default=None, choices=["regular", "jittered", "exponential"]
+        "--schedule", type=str, default=None,
+        choices=["regular", "jittered", "exponential", "mixed"],
     )
     parser.add_argument(
         "--pair-mode", type=str, default=None, choices=["counterfactual", "interventional"]

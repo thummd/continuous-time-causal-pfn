@@ -50,6 +50,7 @@ from .time_schedule import (
     exponential_schedule,
     from_times,
     jittered_schedule,
+    mixed_schedule,
     regular_schedule,
 )
 from .tscm_sampler import ContinuousTSCMSampler
@@ -68,6 +69,7 @@ __all__ = [
     "exponential_schedule",
     "from_times",
     "jittered_schedule",
+    "mixed_schedule",
     "regular_schedule",
     "sample_neural_drift_mechanism",
     "sample_ou_mechanism",

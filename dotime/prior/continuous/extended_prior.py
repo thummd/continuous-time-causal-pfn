@@ -142,6 +142,7 @@ from .continuous_scm import (
 from .time_schedule import (
     exponential_schedule,
     jittered_schedule,
+    mixed_schedule,
     regular_schedule,
 )
 from .tscm_sampler import ContinuousTSCMSampler
@@ -171,6 +172,10 @@ def _build_schedule(
         return jittered_schedule(T=T, dt=dt, jitter=jitter, generator=generator)
     if schedule == "exponential":
         return exponential_schedule(T=T, rate=exp_rate, generator=generator)
+    if schedule == "mixed":
+        return mixed_schedule(
+            T=T, dt=dt, jitter=jitter, rate=exp_rate, generator=generator,
+        )
     raise ValueError(f"unknown schedule: {schedule!r}")
 
 
@@ -190,9 +195,11 @@ class ContinuousExtendedPrior:
         DoT-PFN's CausalChamber-motivated default.
     t_range : tuple of int
         Uniform prior on ``T`` (number of observations).
-    schedule : {"regular", "jittered", "exponential"}
+    schedule : {"regular", "jittered", "exponential", "mixed"}
         Observation schedule family.  ``regular`` reproduces the
-        discrete-time behaviour at ``dt=1.0``.
+        discrete-time behaviour at ``dt=1.0``.  ``mixed`` samples a
+        family per trajectory uniformly, used as the unified training
+        schedule (so a single checkpoint covers all three families).
     dt : float
         Mean inter-observation gap for ``regular`` / ``jittered``
         schedules.
