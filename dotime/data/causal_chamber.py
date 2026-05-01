@@ -25,6 +25,31 @@ LT_META = ["timestamp", "config", "counter", "flag", "intervention"]
 # Recommended 5-variable subgraph: polarizer -> color sensors
 LT_SUBGRAPH_5VAR = ["pol_1", "red", "green", "blue", "osr_c"]
 
+# Wind tunnel variable groups
+WT_ACTUATORS = [
+    "hatch", "pot_1", "pot_2",
+    "v_1", "v_2", "v_mic", "v_in", "v_out",
+    "load_in", "load_out",
+]
+WT_SENSORS = [
+    "current_in", "current_out", "res_in", "res_out",
+    "rpm_in", "rpm_out",
+    "pressure_upwind", "pressure_downwind", "pressure_ambient", "pressure_intake",
+    "mic", "signal_1", "signal_2",
+]
+
+# Recommended 4-variable wind-tunnel subgraph: load_in (actuator) -> downstream sensors.
+WT_SUBGRAPH_4VAR = ["load_in", "rpm_in", "current_in", "pressure_downwind"]
+
+ALL_ACTUATORS = LT_ACTUATORS + WT_ACTUATORS
+
+
+def _default_subgraph_for(dataset_name: str) -> List[str]:
+    """Pick a sensible default subgraph based on dataset name prefix."""
+    if dataset_name.startswith("wt_"):
+        return WT_SUBGRAPH_4VAR
+    return LT_SUBGRAPH_5VAR
+
 
 class CausalChamberLoader:
     """Load and format CausalChamber data for model evaluation."""
@@ -39,7 +64,7 @@ class CausalChamberLoader:
     ):
         self.dataset_name = dataset_name
         self.n_max = n_max
-        self.subgraph_vars = subgraph_vars or LT_SUBGRAPH_5VAR
+        self.subgraph_vars = subgraph_vars or _default_subgraph_for(dataset_name)
         self.ds = Dataset(dataset_name, root=root, download=download)
         self.var_to_idx = {v: i for i, v in enumerate(self.subgraph_vars)}
 
@@ -81,13 +106,19 @@ class CausalChamberLoader:
         timestamps = df["timestamp"].values if "timestamp" in df.columns else None
 
         # Find intervention changepoints (where actuator values change significantly)
-        actuator_cols = [i for i, v in enumerate(var_cols) if v in LT_ACTUATORS]
+        actuator_cols = [i for i, v in enumerate(var_cols) if v in ALL_ACTUATORS]
         if not actuator_cols:
             return []
 
         actuator_data = data[:, actuator_cols]
         diffs = np.abs(np.diff(actuator_data, axis=0))
-        changepoints = np.where(diffs.max(axis=1) > 0.5)[0] + 1
+        # Per-actuator relative threshold: 5% of the column's range, with an
+        # absolute floor at 1e-3 so noise-only columns don't fire and so
+        # narrow-range actuators (e.g. WT load_in in [0.01, 0.5]) still
+        # trigger on real setpoint changes.
+        actuator_ranges = actuator_data.max(axis=0) - actuator_data.min(axis=0)
+        thresholds = np.maximum(0.05 * actuator_ranges, 1e-3)  # (n_actuators,)
+        changepoints = np.where((diffs > thresholds[None, :]).any(axis=1))[0] + 1
 
         # Filter changepoints to ensure enough window before and after
         valid_cps = [cp for cp in changepoints
