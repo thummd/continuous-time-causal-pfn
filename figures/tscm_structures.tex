@@ -1,0 +1,129 @@
+\documentclass[border=6pt]{standalone}
+\usepackage{tikz}
+\usepackage{amsmath,amssymb}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,calc}
+
+% Node styles. Filled = treatment / outcome; outlined = observed
+% covariate / mediator; dashed = unobserved confounder.
+\tikzset{
+    obs/.style    = {circle, draw, minimum size=8mm, inner sep=0pt, font=\small},
+    treat/.style  = {circle, draw, fill=blue!18, minimum size=8mm, inner sep=0pt, font=\small\bfseries},
+    out/.style    = {circle, draw, fill=red!18, minimum size=8mm, inner sep=0pt, font=\small\bfseries},
+    hid/.style    = {circle, draw, dashed, minimum size=8mm, inner sep=0pt, font=\small},
+    arr/.style    = {-{Stealth[length=2.4mm]}, thick},
+    title/.style  = {font=\small\bfseries},
+}
+
+\newcommand{\panel}[3]{%
+  % #1 = panel title
+  % #2 = identification class label (small italics underneath)
+  % #3 = TikZ body
+  \begin{tikzpicture}[baseline=(current bounding box.north)]
+    \node[title] (T) at (0, 1.7) {#1};
+    \node[font=\footnotesize\itshape] at (0, 1.35) {#2};
+    \begin{scope}[yshift=-0.1cm]
+        #3
+    \end{scope}
+  \end{tikzpicture}%
+}
+
+\begin{document}
+
+\begin{tabular}{cccc}
+
+% ===== Row 1: simpler structures =====
+\panel{RCT\_NO\_CONFOUNDING}{trivial}{%
+    \node[treat] (A) at (-0.7, 0) {$A$};
+    \node[out]   (Y) at (0.7, 0)  {$Y$};
+    \draw[arr] (A) -- (Y);
+}
+&
+\panel{OBSERVED\_CONFOUNDER}{(no $A{\to}Y$)}{%
+    \node[obs]   (X) at (0, 0.9) {$X$};
+    \node[treat] (A) at (-0.8, -0.2) {$A$};
+    \node[out]   (Y) at (0.8, -0.2)  {$Y$};
+    \draw[arr] (X) -- (A);
+    \draw[arr] (X) -- (Y);
+}
+&
+\panel{UNOBSERVED\_CONFOUNDER}{non-identifiable}{%
+    \node[hid]   (U) at (0, 0.9)  {$U$};
+    \node[treat] (A) at (-0.8, -0.2) {$A$};
+    \node[out]   (Y) at (0.8, -0.2)  {$Y$};
+    \draw[arr] (U) -- (A);
+    \draw[arr] (U) -- (Y);
+}
+&
+\panel{MEDIATOR}{front-door (trivial)}{%
+    \node[treat] (A) at (-1.2, 0) {$A$};
+    \node[obs]   (M) at (0, 0)    {$M$};
+    \node[out]   (Y) at (1.2, 0)  {$Y$};
+    \draw[arr] (A) -- (M);
+    \draw[arr] (M) -- (Y);
+}
+\\[2.6em]
+
+% ===== Row 2: richer structures =====
+\panel{BACK\_DOOR}{back-door}{%
+    \node[obs]   (X) at (0, 0.9) {$X$};
+    \node[treat] (A) at (-0.8, -0.2) {$A$};
+    \node[out]   (Y) at (0.8, -0.2)  {$Y$};
+    \draw[arr] (X) -- (A);
+    \draw[arr] (X) -- (Y);
+    \draw[arr] (A) -- (Y);
+}
+&
+\panel{FRONT\_DOOR}{front-door}{%
+    \node[hid]   (U) at (0, 0.9)  {$U$};
+    \node[treat] (A) at (-1.2, -0.2) {$A$};
+    \node[obs]   (M) at (0, -0.2)    {$M$};
+    \node[out]   (Y) at (1.2, -0.2)  {$Y$};
+    \draw[arr] (U) -- (A);
+    \draw[arr] (U) to[bend left=20] (Y);
+    \draw[arr] (A) -- (M);
+    \draw[arr] (M) -- (Y);
+}
+&
+\panel{INSTRUMENTAL\_VARIABLE}{IV}{%
+    \node[hid]   (U) at (0, 0.9)  {$U$};
+    \node[obs]   (X) at (-1.6, -0.2) {$X$};
+    \node[treat] (A) at (-0.5, -0.2) {$A$};
+    \node[out]   (Y) at (0.7, -0.2)  {$Y$};
+    \draw[arr] (X) -- (A);
+    \draw[arr] (A) -- (Y);
+    \draw[arr] (U) -- (A);
+    \draw[arr] (U) to[bend left=20] (Y);
+}
+&
+\panel{CONFOUNDER\_MEDIATOR}{back-door}{%
+    \node[obs]   (X) at (0, 0.9) {$X$};
+    \node[treat] (A) at (-1.4, -0.2) {$A$};
+    \node[obs]   (M) at (-0.0, -0.2) {$M$};
+    \node[out]   (Y) at (1.4, -0.2)  {$Y$};
+    \draw[arr] (X) -- (A);
+    \draw[arr] (X) to[bend left=10] (Y);
+    \draw[arr] (A) -- (M);
+    \draw[arr] (M) -- (Y);
+}
+\\[1em]
+
+% ===== Legend =====
+\multicolumn{4}{c}{%
+\begin{tikzpicture}[baseline=0pt]
+    \node[treat]                  (a) at (0, 0)    {$A$};
+    \node[font=\footnotesize, anchor=west] at (a.east) {\,Treatment};
+
+    \node[out]                    (y) at (3, 0)    {$Y$};
+    \node[font=\footnotesize, anchor=west] at (y.east) {\,Outcome};
+
+    \node[obs]                    (o) at (6, 0)    {};
+    \node[font=\footnotesize, anchor=west] at (o.east) {\,Observed covariate / mediator};
+
+    \node[hid]                    (h) at (10.5, 0) {};
+    \node[font=\footnotesize, anchor=west] at (h.east) {\,Unobserved confounder};
+\end{tikzpicture}%
+}
+
+\end{tabular}
+
+\end{document}
