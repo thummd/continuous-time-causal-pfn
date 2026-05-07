@@ -79,16 +79,30 @@ def main() -> None:
     )
     # Chamber-specific flags (ignored for theophylline).
     parser.add_argument(
-        "--chamber-dataset", type=str, default="lt_walks_v1",
-        help="CausalChamber dataset name (e.g. lt_walks_v1)",
+        "--chamber-rig", choices=["lt", "wt"], default="lt",
+        help="Which chamber rig to evaluate on. 'lt' (default) uses the "
+             "light-tunnel change-point heuristic on actuators; 'wt' uses "
+             "the wind-tunnel impulse rig with the explicit intervention "
+             "column (Phase 14b).",
+    )
+    parser.add_argument(
+        "--chamber-dataset", type=str, default=None,
+        help="CausalChamber dataset name. Defaults to 'lt_walks_v1' for "
+             "--chamber-rig lt and 'wt_intake_impulse_v1' for --chamber-rig wt.",
+    )
+    parser.add_argument(
+        "--chamber-experiment", type=str, default=None,
+        help="Experiment within the dataset. Only used for --chamber-rig wt; "
+             "defaults to 'load_out_0.5_osr_downwind_4'.",
     )
     parser.add_argument(
         "--chamber-root", type=str, default="/tmp/causalchamber",
         help="Local directory for CausalChamber downloads",
     )
     parser.add_argument(
-        "--chamber-query-var", type=str, default="red",
-        help="Which sensor variable to query",
+        "--chamber-query-var", type=str, default=None,
+        help="Which sensor variable to query. Defaults to 'red' for "
+             "--chamber-rig lt and 'rpm_in' for --chamber-rig wt.",
     )
     parser.add_argument(
         "--chamber-max-episodes", type=int, default=None,
@@ -96,7 +110,16 @@ def main() -> None:
     )
     parser.add_argument(
         "--chamber-dt-seconds", type=float, default=0.1,
-        help="Inter-sample spacing in seconds (10 Hz default)",
+        help="Inter-sample spacing in seconds (10 Hz default). Only used "
+             "as a fallback when an episode lacks per-row timestamps.",
+    )
+    parser.add_argument(
+        "--chamber-obs-window", type=int, default=50,
+        help="Pre-intervention sample count per episode.",
+    )
+    parser.add_argument(
+        "--chamber-post-window", type=int, default=20,
+        help="Post-intervention sample count per episode.",
     )
     parser.add_argument("--device", default=None)
     parser.add_argument(
@@ -170,28 +193,53 @@ def main() -> None:
         payload = warfarin_metrics_to_dict(result)
     else:
         # causal_chamber
-        from dotime.data.causal_chamber_ct import load_chamber_episodes
         from dotime.eval.continuous_chamber_eval import (
             evaluate_episodes,
             format_summary as chamber_format_summary,
             metrics_to_dict as chamber_metrics_to_dict,
         )
 
-        episodes = load_chamber_episodes(
-            dataset_name=args.chamber_dataset,
-            root=args.chamber_root,
-            max_episodes=args.chamber_max_episodes,
-        )
+        if args.chamber_rig == "wt":
+            from dotime.data.causal_chamber_wt import load_wt_episodes
+
+            dataset_name = args.chamber_dataset or "wt_intake_impulse_v1"
+            experiment = args.chamber_experiment or "load_out_0.5_osr_downwind_4"
+            query_var = args.chamber_query_var or "rpm_in"
+            episodes = load_wt_episodes(
+                experiment=experiment,
+                dataset_name=dataset_name,
+                root=args.chamber_root,
+                obs_window=args.chamber_obs_window,
+                post_window=args.chamber_post_window,
+                max_episodes=args.chamber_max_episodes,
+            )
+            print(
+                f"Loaded {len(episodes)} wt episodes "
+                f"from {dataset_name}/{experiment}, query_var={query_var}"
+            )
+        else:
+            from dotime.data.causal_chamber_ct import load_chamber_episodes
+
+            dataset_name = args.chamber_dataset or "lt_walks_v1"
+            query_var = args.chamber_query_var or "red"
+            episodes = load_chamber_episodes(
+                dataset_name=dataset_name,
+                root=args.chamber_root,
+                max_episodes=args.chamber_max_episodes,
+                obs_window=args.chamber_obs_window,
+                post_window=args.chamber_post_window,
+            )
+
         if not episodes:
             raise SystemExit(
-                f"No intervention episodes found in dataset {args.chamber_dataset!r}. "
+                f"No intervention episodes found in dataset {dataset_name!r}. "
                 "Check that the dataset contains actuator changepoints and that "
                 "--chamber-max-episodes isn't set to 0."
             )
         result = evaluate_episodes(
             model,
             episodes,
-            query_var=args.chamber_query_var,
+            query_var=query_var,
             device=device,
             n_max=model.temporal_encoder.n_max,
             dt_seconds=args.chamber_dt_seconds,

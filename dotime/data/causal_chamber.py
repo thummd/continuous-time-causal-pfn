@@ -7,7 +7,7 @@ and converts them to model-ready input format.
 import torch
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 from causalchamber.datasets import Dataset
 
@@ -24,6 +24,17 @@ LT_META = ["timestamp", "config", "counter", "flag", "intervention"]
 
 # Recommended 5-variable subgraph: polarizer -> color sensors
 LT_SUBGRAPH_5VAR = ["pol_1", "red", "green", "blue", "osr_c"]
+
+
+# Wind-tunnel variable groups (wt_intake_impulse_v1).  The chamber's
+# `intervention` column is a 1-row pulse marker that flags toggle
+# events on the intake-fan setpoint `load_in`.  `load_in` takes two
+# discrete values (low: 0.01, high: 1.0) and roughly half the
+# intervention pulses are "decoys" that re-assert the current value
+# (no SCM-level effect); the other half are real load_in transitions
+# (do(load_in := c) for c in {0.01, 1.0}).
+WT_TREATMENT = "load_in"
+WT_SUBGRAPH_5VAR = ["load_in", "current_in", "rpm_in", "pressure_intake", "pressure_downwind"]
 
 
 class CausalChamberLoader:
@@ -56,6 +67,9 @@ class CausalChamberLoader:
         df: pd.DataFrame,
         obs_window: int = 50,
         post_window: int = 20,
+        intervention_source: Literal["actuator_step", "intervention_column"] = "actuator_step",
+        treatment_var: Optional[str] = None,
+        require_value_change: bool = True,
     ) -> List[Dict]:
         """Extract intervention episodes from the data.
 
@@ -69,15 +83,42 @@ class CausalChamberLoader:
         df : DataFrame with time series and 'intervention' column
         obs_window : number of pre-intervention time steps
         post_window : number of post-intervention time steps
+        intervention_source : which signal defines an episode boundary.
+            ``"actuator_step"`` (default, used by ``lt_walks_v1``) runs
+            a change-point detector over the actuator columns of the
+            chosen subgraph.  ``"intervention_column"`` (used by
+            ``wt_intake_impulse_v1``) reads the chamber's explicit
+            ``intervention`` flag column directly.
+        treatment_var : variable that toggles at each intervention
+            pulse (only used when ``intervention_source ==
+            "intervention_column"``).  Must be present in
+            ``self.subgraph_vars``.  The intervention value reported
+            per episode is the post-pulse value of this variable.
+        require_value_change : when ``intervention_source ==
+            "intervention_column"``, drop pulses where
+            ``treatment_var`` does not actually change across the
+            pulse (the wind-tunnel rig sends ~one decoy pulse for
+            every two real toggles -- they reassert the current
+            setpoint and are valid SCM events but produce no
+            observable response).  Default ``True`` keeps only real
+            transitions.
 
         Returns
         -------
         List of episode dicts
         """
+        if intervention_source == "intervention_column":
+            return self._extract_episodes_from_intervention_column(
+                df,
+                obs_window=obs_window,
+                post_window=post_window,
+                treatment_var=treatment_var,
+                require_value_change=require_value_change,
+            )
+
         # Select only subgraph variables
         var_cols = [v for v in self.subgraph_vars if v in df.columns]
         data = df[var_cols].values  # (T_total, N_sub)
-        intervention_col = df["intervention"].values if "intervention" in df.columns else None
 
         # Real per-row physical timestamps (seconds).  CausalChamber
         # ``lt_walks_v1`` exposes a ``timestamp`` float column; rows are
@@ -143,6 +184,91 @@ class CausalChamberLoader:
                 # gap from the last pre-intervention sample to the
                 # first post-intervention sample.
                 episode['intervention_dt'] = float(ts_post[0] - ts_obs[-1])
+
+            episodes.append(episode)
+
+        return episodes
+
+    def _extract_episodes_from_intervention_column(
+        self,
+        df: pd.DataFrame,
+        obs_window: int,
+        post_window: int,
+        treatment_var: Optional[str],
+        require_value_change: bool,
+    ) -> List[Dict]:
+        """Episode boundaries straight from the chamber's `intervention` flag.
+
+        The wind-tunnel ``wt_intake_impulse_v1`` rig encodes every
+        treatment toggle as a single-row ``intervention=1`` pulse.
+        We treat each rising edge (``0 -> 1``) as the intervention
+        onset and read the new ``treatment_var`` value off the post-
+        pulse row.
+        """
+        if "intervention" not in df.columns:
+            raise ValueError(
+                "intervention_source='intervention_column' requires the "
+                "DataFrame to have an 'intervention' column"
+            )
+        if treatment_var is None:
+            raise ValueError(
+                "intervention_source='intervention_column' requires "
+                "`treatment_var` (the variable that toggles at each pulse)"
+            )
+
+        var_cols = [v for v in self.subgraph_vars if v in df.columns]
+        if treatment_var not in var_cols:
+            raise ValueError(
+                f"treatment_var={treatment_var!r} not in subgraph "
+                f"({var_cols}); add it to ``subgraph_vars``"
+            )
+        treat_idx_local = var_cols.index(treatment_var)
+        data = df[var_cols].values  # (T_total, N_sub)
+
+        if "timestamp" in df.columns:
+            timestamps_full = df["timestamp"].astype(float).values
+        else:
+            timestamps_full = None
+
+        iv = df["intervention"].values
+        # Rising edges of the intervention flag: each marks one toggle event.
+        rising = np.where(np.diff(iv) > 0)[0] + 1
+
+        episodes: List[Dict] = []
+        for cp in rising:
+            if cp < obs_window or cp + post_window > len(data):
+                continue
+            # Pre-pulse value (one row before the flag rises).
+            pre_val = float(data[cp - 1, treat_idx_local])
+            post_val = float(data[cp, treat_idx_local])
+            if require_value_change and post_val == pre_val:
+                # Decoy pulse: the chamber re-asserted the current
+                # setpoint without changing it.  Skip because it
+                # produces no observable response and would inflate
+                # naive-baseline RMSE without testing causal-effect
+                # tracking.
+                continue
+
+            X_obs = data[cp - obs_window: cp]
+            X_post = data[cp: cp + post_window]
+
+            episode = {
+                "X_obs": X_obs,
+                "X_post": X_post,
+                "intervention_var": treatment_var,
+                "intervention_var_idx": self.var_to_idx.get(treatment_var, treat_idx_local),
+                "intervention_value": post_val,
+                "intervention_value_pre": pre_val,
+                "changepoint": int(cp),
+                "var_names": var_cols,
+            }
+            if timestamps_full is not None:
+                ts_obs = timestamps_full[cp - obs_window: cp]
+                ts_post = timestamps_full[cp: cp + post_window]
+                t0 = float(ts_obs[0])
+                episode["timestamps_obs"] = (ts_obs - t0).astype(np.float32)
+                episode["timestamps_post"] = (ts_post - t0).astype(np.float32)
+                episode["intervention_dt"] = float(ts_post[0] - ts_obs[-1])
 
             episodes.append(episode)
 
