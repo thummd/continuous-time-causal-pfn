@@ -460,6 +460,18 @@ def train_continuous(
                     },
                     save_path,
                 )
+                # Mirror the new best checkpoint to the wandb run so a
+                # workspace wipe (rsync --delete, container restart,
+                # disk full) does not lose the artefact.  Using
+                # policy="live" replaces the previous upload in place
+                # rather than versioning every save -- a single 4-MB
+                # ckpt per run, not 20 of them.
+                if use_wandb:
+                    import wandb  # noqa: F811
+                    try:
+                        wandb.save(save_path, base_path=save_dir, policy="live")
+                    except Exception as e:  # pragma: no cover
+                        print(f"   [warn] wandb.save() failed: {e}")
             else:
                 n_evals_since_best += 1
 

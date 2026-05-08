@@ -75,6 +75,42 @@ git push origin ct-dev
 If a DoT-PFN refactor breaks continuous-time code, resolve conflicts
 inside `dotime/*/continuous/` without touching the upstream files.
 
+## Deploying to the GPU server
+
+The shared GPU server (`aidf-svr-gpu04`) does **not** keep a `.git` checkout
+of this repo — it runs from a plain working tree at
+`~/repos/continuous-time-causal-pfn/`. Two ways to push code there:
+
+1. **Targeted scp** (preferred for small edits): copy only the files you
+   changed. Safe by construction, never touches `checkpoints/` or `wandb/`.
+
+   ```bash
+   scp dotime/training/continuous_trainer.py \
+       dennis@10.230.252.6:repos/continuous-time-causal-pfn/dotime/training/
+   ```
+
+2. **rsync of the whole tree** (for many files at once): **always** use
+   `--exclude-from=.rsyncignore` and **never** add `--delete` without
+   reading the exclude list first. Otherwise you risk wiping training
+   artefacts the server generated.
+
+   ```bash
+   rsync -avz --exclude-from=.rsyncignore \
+       ./ dennis@10.230.252.6:repos/continuous-time-causal-pfn/
+   ```
+
+   The repo ships a top-level `.rsyncignore` that excludes
+   `checkpoints/`, `results/`, `wandb/`, `logs/`, LaTeX intermediates, and
+   editor caches. **This file is the canonical exclude list — read it
+   before changing the rsync invocation.**
+
+> **Postmortem note (May 2026):** Six of the eight `grid_v4` ablation
+> checkpoints (~600 MB total) vanished between Apr 29 and May 1, 2026
+> because a workspace sync ran without exclusions and `--delete`-style
+> pruned the server's `checkpoints/` tree. The trainer now mirrors every
+> best checkpoint to wandb via `wandb.save(..., policy="live")` so a
+> future workspace wipe is recoverable.
+
 ## Upstreaming continuous-time work into DoT-PFN
 
 When a continuous-time component is stable enough to ship in the NeurIPS
