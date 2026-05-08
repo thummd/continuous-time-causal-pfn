@@ -36,7 +36,7 @@ paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper
 
 All pre-existing discrete-time code is unchanged.
 
-### Current continuous-time module (phases 1 – 10)
+### Current continuous-time module (phases 1 – 11)
 
 End-to-end **training** pipeline: config → CLI entry → prior →
 dataloader → model → loss → checkpoint.  The prior supports both
@@ -58,7 +58,7 @@ benchmarks:
 - **CausalChamber** (~10 Hz physical-system walks with known actuator
   interventions).
 
-261/261 tests pass in `tests/`.
+269/269 tests pass in `tests/`.
 
 Quick start — train:
 
@@ -446,16 +446,45 @@ PYTHONPATH=. python scripts/ct_train.py \
     --save-dir checkpoints/ct/random_neural_mixed
 ```
 
-### Not yet implemented (phase 11+)
+**Phase 11 — fine-grid integration (schedule-invariant SDE law)**
+(verified in `tests/test_continuous_phase11.py`):
 
-- DREAM4 (or similar) in-silico gene-regulatory-network benchmark as
-  a third synthetic-but-realistic eval dataset.
-- GatedDeltaProduct continuous-time encoder backend (currently only
-  the Transformer backend is wired through the `times` / `t_int_start`
-  path end to end).
-- Nonlinear drifts inside regime-switching SCMs (Phase 8 regimes still
-  use linear OU within each regime; composing Phase 10 × Phase 8 is
-  straightforward but not wired yet).
+- **``ContinuousSCM.simulate`` gained a ``num_substeps`` argument.**
+  Each observation gap ``Delta_i = times[i+1] - times[i]`` is split
+  into ``num_substeps`` Euler-Maruyama sub-steps of size
+  ``Delta_i / num_substeps`` with independent noise per sub-step.
+  ``num_substeps = 1`` (default) recovers the pre-Phase-11 behaviour
+  (tier-(B) naive observation-grid integration). Large
+  ``num_substeps`` approximates tier-(C) fine-grid integration so
+  the law of the trajectory becomes schedule-invariant, satisfying
+  the continuous-time-causal-prior definition in Section 3.1 of the
+  paper in the limit.
+- **`sample_counterfactual_pair` and `sample_interventional_pair`
+  forward the same knob.** The shared noise realisation in the
+  counterfactual case is drawn on the fine grid, so the
+  pre-intervention match between obs and counterfactual is exact at
+  any refinement level.
+- **Quantitative check**: for a 1-D OU SCM with horizon >> 1/theta,
+  one-step Euler-Maruyama (tier B) over-shoots the stationary
+  variance by >1.5x; `num_substeps=200` recovers it to within 15%
+  (end-to-end Monte-Carlo test in Phase 11 test file).
+- **Schedule-invariance test**: for a fixed query time t=5, varying
+  the surrounding observation schedule changes the tier-(B) variance
+  by >15%, but the tier-(C) variance by <15% — the operational
+  signature of Definition 3.1.
+- **No regression**: all 151 prior tests (phases 1-10, integration,
+  bar head, Warfarin, Theophylline) pass unchanged under the
+  default ``num_substeps=1``.
+
+### Not yet implemented (phase 12+)
+
+- Wire ``num_substeps`` through ``ContinuousExtendedPrior`` /
+  dataloader / trainer for end-to-end tier-(C) training runs.
+- Jump priors (compound-Poisson / Levy) as an orthogonal
+  continuous-time family alongside diffusions.
+- DREAM4 (or similar) in-silico gene-regulatory-network benchmark.
+- GatedDeltaProduct continuous-time encoder backend.
+- Nonlinear drifts inside regime-switching SCMs.
 
 ### Quick example: end-to-end training (Python API)
 

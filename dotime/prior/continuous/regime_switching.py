@@ -377,6 +377,8 @@ class ContinuousRegimeSwitchingSCM:
             raise ValueError(
                 f"shape mismatch: times={tuple(times.shape)}, dts={tuple(dts.shape)}"
             )
+        if not isinstance(substeps, int) or substeps < 1:
+            raise ValueError(f"substeps must be a positive int, got {substeps!r}")
         T = times.numel()
         n_fine = (T - 1) * substeps
 

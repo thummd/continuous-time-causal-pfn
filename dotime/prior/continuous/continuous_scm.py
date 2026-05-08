@@ -425,6 +425,8 @@ class ContinuousSCM:
             raise ValueError(
                 f"dts must be 1-D of length T - 1, got shape {tuple(dts.shape)} for T = {times.numel()}"
             )
+        if not isinstance(substeps, int) or substeps < 1:
+            raise ValueError(f"substeps must be a positive int, got {substeps!r}")
         T = times.numel()
         n_fine = (T - 1) * substeps
 
