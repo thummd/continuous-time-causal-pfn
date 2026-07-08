@@ -43,6 +43,17 @@ python scripts/ct_train.py --config configs/continuous_default.yaml
 See **Quick example** (Python API) and **CLI equivalent** below for the full
 training/evaluation entry points.
 
+## Pretrained checkpoints
+
+Pretrained checkpoints are hosted on Hugging Face
+([`thummd/continuous-time-causal-pfn`](https://huggingface.co/thummd/continuous-time-causal-pfn)),
+not in this git repository:
+
+```bash
+python scripts/download_checkpoints.py                  # all
+python scripts/download_checkpoints.py --subset grid_v4 # encoder x integrator ablation grid
+```
+
 ## Citation
 
 ```bibtex
