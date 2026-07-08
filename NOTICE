@@ -1,0 +1,18 @@
+Continuous-time Causal Prior-Fitted Networks
+Copyright 2026 Dennis Thumm, Ruben Wiedemann, Ying Chen
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Vendored code
+-------------
+The top-level packages `causal_time_prior/` and `dopfnprior/` are vendored
+(a minimal subset) from the authors' own repositories so that this repository
+is self-contained. They are authored by Dennis Thumm and released here under
+the same Apache-2.0 license.
+
+Third-party dependencies
+------------------------
+This project depends on, but does not redistribute, the following packages,
+which carry their own licenses (installed via pip; see setup.py):
+  - pfns (PFN bar-distribution head)          Apache-2.0
+  - torch, numpy, scipy, pandas, networkx, matplotlib, pyyaml, wandb, causalchamber
