@@ -22,8 +22,6 @@ import torch
 import yaml
 import numpy as np
 
-# Ensure ctp is importable
-sys.path.insert(0, os.path.expanduser("~/repos/ctp"))
 
 from dotime.training.trainer import train
 from dotime.model.do_over_time_pfn import DoOverTimePFN
