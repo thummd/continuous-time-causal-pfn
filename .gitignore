@@ -5,13 +5,6 @@ dist/
 build/
 *.pt
 checkpoints/
-# Allow s4 and s5 sanity checkpoints via LFS
-!checkpoints/s4_*/
-!checkpoints/s4_*/*.pt
-!checkpoints/s4_*/*.csv
-!checkpoints/s5_*/
-!checkpoints/s5_*/*.pt
-!checkpoints/s5_*/*.csv
 /data/*
 # Bundle small public PK datasets used for zero-shot eval (phase 4).
 !/data/pk_pd/
