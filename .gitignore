@@ -21,4 +21,25 @@ checkpoints/
 identifiability.tex
 
 .env
+# The root-level `env` file holds OVERLEAF_GIT_TOKEN — never commit it.
+/env
 wandb/
+logs/
+
+# Session / editor / OS artifacts
+.claude/
+.ipynb_checkpoints/
+.DS_Store
+*.swp
+
+# Large archives — never commit data/release zips (e.g. grid_v4.zip)
+*.zip
+
+# Internal / unpublished — not part of the public release.
+# The paper is published on OpenReview and arXiv; internal planning notes
+# and deploy config are kept out of the public repository.
+paper/
+PHASE_*_PLAN.md
+chamber_table.md
+results_aggregation.ipynb
+.rsyncignore

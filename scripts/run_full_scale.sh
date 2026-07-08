@@ -2,7 +2,7 @@
 # Full-scale pinball comparison: 100K steps on GPU server.
 #
 # Usage:
-#   ssh 10.230.252.6
+#   ssh <gpu-server>
 #   cd /path/to/do-over-time-pfn
 #   bash scripts/run_full_scale.sh [cuda:1] [--skip-install] [128]
 #

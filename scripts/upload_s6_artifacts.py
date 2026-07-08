@@ -9,7 +9,7 @@ import os
 import sys
 import wandb
 
-REPO_DIR = "/home/dennis/repos/do-over-time-pfn"
+REPO_DIR = os.path.expanduser("~/repos/do-over-time-pfn")
 PROJECT = "dot-pfn/do-over-time-pfn"
 
 RUNS = [

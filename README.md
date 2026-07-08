@@ -1,40 +1,76 @@
-# Continuous-time Causal Prior Fitted Networks (ICML FMSD 2026)
+# Continuous-time Causal Prior-Fitted Networks
 
-> **This is a private fork of [do-over-time-pfn](https://github.com/thummd/do-over-time-pfn).**
-> It hosts the development for the ICML 2026 *Foundation Models for Structured
-> Data* workshop paper on **continuous-time causal PFNs**. The upstream
-> DoT-PFN repo continues to be the home of the full NeurIPS 2026 submission.
+Code for the ICML 2026 *Foundation Models for Structured Data* (FMSD) workshop
+paper **"Towards Continuous-time Causal Foundation Models."**
 
-## Fork relationship
+Prior-Fitted Networks (PFNs) amortise inference by pre-training a transformer on
+data sampled from an analytic prior. This repository extends **causal, temporal
+PFNs from discrete time to continuous time**. It provides:
 
-| Aspect | DoT-PFN (upstream) | ct-cpfn (this fork) |
-|---|---|---|
-| Target venue | NeurIPS 2026 (full paper) | ICML FMSD 2026 workshop (4-page non-archival) |
-| Scope | Discrete-time temporal causal PFN + identifiability benchmark | Continuous-time extension: SDE prior, Delta-t aware encoder, irregular-sampling real-world eval |
-| GitHub | `thummd/do-over-time-pfn` | `thummd/continuous-time-causal-pfn` |
-| Branch layout | `main`, `dennis` (latest s8) | `main`, `dennis` (mirror), `ct-dev` (workshop work) |
+- a precise **continuity criterion** — the law of a sampled trajectory must be
+  invariant to the observation schedule — and a three-tier taxonomy (discrete /
+  naive observation-grid integration / fine-grid integration);
+- a **construction** realising the top tier: Ornstein–Uhlenbeck or neural-drift
+  SDEs on random causal DAGs, integrated on a fine grid and subsampled to
+  irregular observation schedules, with hard / soft / time-varying interventions;
+- a **Δt-aware encoder** (Fourier time embeddings); and
+- a **zero-shot evaluation** protocol on pharmacokinetic (Theophylline, Warfarin)
+  and physical-system (Causal Chamber) data.
 
-### Remotes
+> The real-data results are **preliminary**; the paper documents the multi-seed
+> caveats (several single-seed headline numbers do not replicate). See `paper/`.
+
+## Installation
 
 ```bash
-git remote -v
-# origin    git@github.com:thummd/continuous-time-causal-pfn.git  (fetch + push)
-# upstream  git@github.com:thummd/do-over-time-pfn.git             (fetch + push)
+git clone https://github.com/thummd/continuous-time-causal-pfn
+cd continuous-time-causal-pfn
+pip install -e .
 ```
 
-### Where new code goes
+Requires Python ≥ 3.10 and PyTorch ≥ 2.0. The temporal-SCM prior
+(`causal_time_prior`) and the minimal graph/mechanism utilities it needs
+(`dopfnprior`) are **vendored** at the repository root, so the package is
+self-contained — no external repositories or `PYTHONPATH` setup are required.
 
-Continuous-time extensions live under `continuous/` subdirectories so that
-they can be cleanly upstreamed into DoT-PFN later:
+## Quickstart
+
+```bash
+# Train a continuous-time causal PFN on the random-graph SDE prior
+python scripts/ct_train.py --config configs/continuous_default.yaml
+```
+
+See **Quick example** (Python API) and **CLI equivalent** below for the full
+training/evaluation entry points.
+
+## Citation
+
+```bibtex
+@inproceedings{thumm2026continuous,
+  title     = {Towards Continuous-time Causal Foundation Models},
+  author    = {Thumm, Dennis and Wiedemann, Ruben and Chen, Ying},
+  booktitle = {ICML 2026 Workshop on Foundation Models for Structured Data (FMSD)},
+  year      = {2026}
+}
+```
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). The vendored
+`causal_time_prior/` and `dopfnprior/` packages are the authors' own code,
+released here under the same license.
+
+## Repository layout
 
 ```
-dotime/prior/continuous/   -> OU mechanism sampler, ContinuousSCM, Delta-t schedules
-dotime/model/continuous/   -> Fourier time embeddings (Delta-t aware)
-dotime/data/pk_pd/         -> Theophylline / Warfarin loaders (stub)
-paper/icml_fmsd/           -> workshop paper draft (NeurIPS draft stays in paper/)
+dotime/prior/continuous/   OU mechanism sampler, ContinuousSCM, Δt schedules
+dotime/model/continuous/   Fourier time embeddings (Δt-aware encoder)
+dotime/data/pk_pd/         Theophylline / Warfarin loaders
+causal_time_prior/         (vendored) temporal-SCM prior
+dopfnprior/                (vendored) graph / mechanism utilities
+scripts/                   training / evaluation entry points
+paper/icml_fmsd/           workshop paper source
 ```
-
-All pre-existing discrete-time code is unchanged.
 
 ### Current continuous-time module (phases 1 – 13)
 
@@ -628,37 +664,12 @@ times, X_obs, X_cf = scm.sample_counterfactual_pair(times, dts, intv)
 # After window:   X_cf diverges from X_obs only through causal propagation.
 ```
 
-### LFS checkpoints
-
-This fork was cloned **without LFS blobs**. The `.gitattributes` LFS
-pointers are present, but the underlying checkpoint files are only stored
-in the upstream DoT-PFN LFS server. If you need a DoT-PFN checkpoint for
-baselines:
-
-```bash
-# One-off pull of specific file from upstream LFS
-git lfs pull upstream --include "checkpoints/s8_*/do_over_time_pfn_best.pt"
-```
-
-New checkpoints produced during continuous-time experiments should be
-committed to this fork's own LFS (omit `lfs.allowincompletepush=true` for
-those commits).
-
-### Syncing with DoT-PFN
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow. In short:
-
-```bash
-git fetch upstream
-git checkout main && git merge upstream/main && git push origin main
-git checkout ct-dev && git merge main   # pull NeurIPS changes into workshop branch
-```
-
 ---
 
-## Upstream Do-Over-Time-PFN README
+## Base model: Do-Over-Time-PFN
 
-*(Everything below is inherited from DoT-PFN.)*
+The continuous-time prior and encoder above sit on top of the Do-Over-Time-PFN
+architecture, whose description follows.
 
 ## Overview
 

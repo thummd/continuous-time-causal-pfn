@@ -6,7 +6,7 @@
 #
 # GPU assignment is driven by the ``GPUS`` env var (comma-separated list).
 # Default targets ``cuda:0,cuda:2`` -- the two free slots on
-# aidf-svr-gpu04 when the box is shared with VLLM / sinkhorn / dennis's
+# <gpu-server> when the box is shared with VLLM / sinkhorn / the maintainer's
 # own DoT-PFN runs on cuda:1 and cuda:3.  Cells are dispatched in waves
 # of size ``len(GPUS)``; the number of waves is ``ceil(6 / len(GPUS))``.
 #
