@@ -95,6 +95,7 @@ def main():
     p.add_argument("--n-eval-batches", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--eval-seed", type=int, default=99999)
+    p.add_argument("--checkpoint-seeds", nargs="+", type=int, default=[0])
     p.add_argument("--mechanism-kind", default="linear", choices=["linear", "neural", "mixed"])
     p.add_argument("--schedule", default="regular", choices=["regular", "jittered", "exponential", "mixed"])
     p.add_argument("--dt", type=float, default=1.0)
@@ -113,60 +114,78 @@ def main():
     if unknown:
         raise SystemExit(f"unknown cells: {unknown}; valid: {CELLS}")
 
-    existing_rows: dict[str, dict] = {}
-    if args.cells and args.save_json.exists():
+    existing_rows: dict[tuple[str, int], dict] = {}
+    if (args.cells or args.checkpoint_seeds != [0]) and args.save_json.exists():
         prev = json.loads(args.save_json.read_text())
-        existing_rows = {r["cell"]: r for r in prev.get("rows", [])}
+        existing_rows = {
+            (r["cell"], int(r.get("checkpoint_seed", 0))): r
+            for r in prev.get("rows", [])
+        }
         print(f"[merge] loaded {len(existing_rows)} existing rows from {args.save_json}")
 
     device = args.device or ("mps" if torch.backends.mps.is_available() else
                               "cuda" if torch.cuda.is_available() else "cpu")
     print(f"[device] {device}")
 
-    new_rows: dict[str, dict] = {}
+    new_rows: dict[tuple[str, int], dict] = {}
     for cell in cells_to_run:
-        ckpt_path = GRID_ROOT / cell / "seed_0" / "continuous_do_over_time_pfn_best.pt"
-        if not ckpt_path.exists():
-            print(f"[skip] {cell} (missing checkpoint)")
-            continue
-        model, cfg = _load_model(ckpt_path, device)
+        for checkpoint_seed in args.checkpoint_seeds:
+            ckpt_path = (
+                GRID_ROOT / cell / f"seed_{checkpoint_seed}"
+                / "continuous_do_over_time_pfn_best.pt"
+            )
+            if not ckpt_path.exists():
+                print(f"[skip] {cell} seed={checkpoint_seed} (missing checkpoint)")
+                continue
+            model, cfg = _load_model(ckpt_path, device)
 
-        loader = ContinuousTemporalInterventionDataLoader(
-            num_steps=args.n_eval_batches,
-            batch_size=args.batch_size,
-            seed=args.eval_seed,
-            device=device,
-            prefetch=0,
-            prior_mode="random",
-            n_min_prior=3,
-            n_max_prior=cfg.get("n_max", 10),
-            edge_prob=0.3,
-            hidden_prob=0.0,
-            mechanism_kind=args.mechanism_kind,
-            schedule=args.schedule,
-            dt=args.dt,
-            substeps=args.substeps,
-            pair_mode="counterfactual",
-            t_range=(60, 120),
-            n_max=cfg["n_max"],
-            theta_range=(0.1, 0.5),
-            sigma_range=(0.2, 0.6),
-            weight_scale=0.3,
-            intervention_value_scale=1.0,
-            normalize=True,
-            target_key="Y_true",
-            n_queries=1,
-            query_mode="single",
-            vectorize=True,
-        )
-        m = _evaluate(model, loader, device)
-        print(f"[{cell:24s}] loss={m['loss']:.4f}  "
-              f"[{m['loss_ci_lo']:.4f}, {m['loss_ci_hi']:.4f}]  "
-              f"rmse_norm={m['rmse_norm']:.4f}  n_batches={m['n_batches']}")
-        new_rows[cell] = {"cell": cell, **{k: v for k, v in m.items() if k != "per_batch_loss"}}
+            loader = ContinuousTemporalInterventionDataLoader(
+                num_steps=args.n_eval_batches,
+                batch_size=args.batch_size,
+                seed=args.eval_seed,
+                device=device,
+                prefetch=0,
+                prior_mode="random",
+                n_min_prior=3,
+                n_max_prior=cfg.get("n_max", 10),
+                edge_prob=0.3,
+                hidden_prob=0.0,
+                mechanism_kind=args.mechanism_kind,
+                schedule=args.schedule,
+                dt=args.dt,
+                substeps=args.substeps,
+                pair_mode="counterfactual",
+                t_range=(60, 120),
+                n_max=cfg["n_max"],
+                theta_range=(0.1, 0.5),
+                sigma_range=(0.2, 0.6),
+                weight_scale=0.3,
+                intervention_value_scale=1.0,
+                normalize=True,
+                target_key="Y_true",
+                n_queries=1,
+                query_mode="single",
+                vectorize=True,
+            )
+            m = _evaluate(model, loader, device)
+            print(f"[{cell:24s} seed={checkpoint_seed}] loss={m['loss']:.4f}  "
+                  f"[{m['loss_ci_lo']:.4f}, {m['loss_ci_hi']:.4f}]  "
+                  f"rmse_norm={m['rmse_norm']:.4f}  n_batches={m['n_batches']}")
+            new_rows[(cell, checkpoint_seed)] = {
+                "cell": cell,
+                "checkpoint_seed": checkpoint_seed,
+                "checkpoint_path": str(ckpt_path.relative_to(REPO)),
+                **{k: v for k, v in m.items() if k != "per_batch_loss"},
+            }
 
     merged = {**existing_rows, **new_rows}
-    rows = [merged[c] for c in CELLS if c in merged]
+    output_seeds = sorted({seed for _, seed in merged} | set(args.checkpoint_seeds))
+    rows = [
+        merged[(c, s)]
+        for c in CELLS
+        for s in output_seeds
+        if (c, s) in merged
+    ]
 
     args.save_json.parent.mkdir(parents=True, exist_ok=True)
     args.save_json.write_text(json.dumps({
@@ -178,6 +197,7 @@ def main():
             "n_eval_batches": args.n_eval_batches,
             "batch_size": args.batch_size,
             "eval_seed": args.eval_seed,
+            "checkpoint_seeds": args.checkpoint_seeds,
         },
         "rows": rows,
     }, indent=2))

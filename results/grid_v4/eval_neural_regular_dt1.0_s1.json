@@ -1,0 +1,77 @@
+{
+  "eval_distribution": {
+    "mechanism_kind": "neural",
+    "schedule": "regular",
+    "dt": 1.0,
+    "substeps": 1,
+    "n_eval_batches": 50,
+    "batch_size": 32,
+    "eval_seed": 99999
+  },
+  "rows": [
+    {
+      "cell": "pos_naive_OU",
+      "loss": 0.3444357976317406,
+      "loss_ci_lo": 0.33083843140304087,
+      "loss_ci_hi": 0.35738303837180135,
+      "rmse_norm": 1.2516463565826417,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_fine_OU",
+      "loss": 0.33720365434885025,
+      "loss_ci_lo": 0.32453552719205614,
+      "loss_ci_hi": 0.3492360080108047,
+      "rmse_norm": 1.2143412351608276,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_naive_OU",
+      "loss": 0.33961556017398836,
+      "loss_ci_lo": 0.3264105219691992,
+      "loss_ci_hi": 0.35214892335236075,
+      "rmse_norm": 1.2288064241409302,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_fine_OU",
+      "loss": 0.33697922706604005,
+      "loss_ci_lo": 0.32435602417588233,
+      "loss_ci_hi": 0.348991542160511,
+      "rmse_norm": 1.2131660079956055,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_naive_neural",
+      "loss": 0.34130564391613005,
+      "loss_ci_lo": 0.3271978768706322,
+      "loss_ci_hi": 0.3548311166465283,
+      "rmse_norm": 1.2403752505779266,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_fine_neural",
+      "loss": 0.33535859286785125,
+      "loss_ci_lo": 0.32230861553549767,
+      "loss_ci_hi": 0.3476999720558524,
+      "rmse_norm": 1.2171021544933318,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_naive_neural",
+      "loss": 0.3405051538348198,
+      "loss_ci_lo": 0.32632152308523654,
+      "loss_ci_hi": 0.35412849839031696,
+      "rmse_norm": 1.2352235424518585,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_fine_neural",
+      "loss": 0.3352172228693962,
+      "loss_ci_lo": 0.3220991451740265,
+      "loss_ci_hi": 0.347548613704741,
+      "rmse_norm": 1.2173559391498565,
+      "n_batches": 50
+    }
+  ]
+}

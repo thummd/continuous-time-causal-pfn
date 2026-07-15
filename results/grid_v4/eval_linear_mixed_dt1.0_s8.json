@@ -1,0 +1,77 @@
+{
+  "eval_distribution": {
+    "mechanism_kind": "linear",
+    "schedule": "mixed",
+    "dt": 1.0,
+    "substeps": 8,
+    "n_eval_batches": 50,
+    "batch_size": 32,
+    "eval_seed": 99999
+  },
+  "rows": [
+    {
+      "cell": "pos_naive_OU",
+      "loss": 0.39162982881069186,
+      "loss_ci_lo": 0.3723471160978079,
+      "loss_ci_hi": 0.41031728409230706,
+      "rmse_norm": 1.4441239762306213,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_fine_OU",
+      "loss": 0.37724740445613864,
+      "loss_ci_lo": 0.3587384756654501,
+      "loss_ci_hi": 0.3954986320436001,
+      "rmse_norm": 1.3995599579811095,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_naive_OU",
+      "loss": 0.3826201558113098,
+      "loss_ci_lo": 0.3633358708024025,
+      "loss_ci_hi": 0.4010417417436838,
+      "rmse_norm": 1.4134713363647462,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_fine_OU",
+      "loss": 0.3768963247537613,
+      "loss_ci_lo": 0.3583423650711775,
+      "loss_ci_hi": 0.3951408157199621,
+      "rmse_norm": 1.3999510264396668,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_naive_neural",
+      "loss": 0.39068076610565183,
+      "loss_ci_lo": 0.37062145565450194,
+      "loss_ci_hi": 0.4099736008048057,
+      "rmse_norm": 1.427467257976532,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_fine_neural",
+      "loss": 0.3813136583566666,
+      "loss_ci_lo": 0.3620609515607357,
+      "loss_ci_hi": 0.3999690975397825,
+      "rmse_norm": 1.4033292388916017,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_naive_neural",
+      "loss": 0.39035705983638763,
+      "loss_ci_lo": 0.3701767483353615,
+      "loss_ci_hi": 0.4097653071135282,
+      "rmse_norm": 1.4230680513381957,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_fine_neural",
+      "loss": 0.3878973752260208,
+      "loss_ci_lo": 0.3681939290612936,
+      "loss_ci_hi": 0.4070273251980543,
+      "rmse_norm": 1.4209989166259767,
+      "n_batches": 50
+    }
+  ]
+}

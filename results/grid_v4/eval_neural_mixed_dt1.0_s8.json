@@ -1,0 +1,77 @@
+{
+  "eval_distribution": {
+    "mechanism_kind": "neural",
+    "schedule": "mixed",
+    "dt": 1.0,
+    "substeps": 8,
+    "n_eval_batches": 50,
+    "batch_size": 32,
+    "eval_seed": 99999
+  },
+  "rows": [
+    {
+      "cell": "pos_naive_OU",
+      "loss": 0.36467096865177157,
+      "loss_ci_lo": 0.3503248494118452,
+      "loss_ci_hi": 0.3803707668483257,
+      "rmse_norm": 1.3298593258857727,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_fine_OU",
+      "loss": 0.35331616759300233,
+      "loss_ci_lo": 0.34019157856702803,
+      "loss_ci_hi": 0.36760192589461804,
+      "rmse_norm": 1.27286270737648,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_naive_OU",
+      "loss": 0.3584951293468475,
+      "loss_ci_lo": 0.34469582049548625,
+      "loss_ci_hi": 0.3727896399497985,
+      "rmse_norm": 1.2973527610301971,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_fine_OU",
+      "loss": 0.35331968069076536,
+      "loss_ci_lo": 0.3401730455160141,
+      "loss_ci_hi": 0.3675764204710722,
+      "rmse_norm": 1.27250461935997,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_naive_neural",
+      "loss": 0.36160520613193514,
+      "loss_ci_lo": 0.34695345635712144,
+      "loss_ci_hi": 0.37764938683807847,
+      "rmse_norm": 1.3117704904079437,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_fine_neural",
+      "loss": 0.35203460812568665,
+      "loss_ci_lo": 0.33860429805517195,
+      "loss_ci_hi": 0.3663724093437195,
+      "rmse_norm": 1.2764712572097778,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_naive_neural",
+      "loss": 0.36082272946834565,
+      "loss_ci_lo": 0.3458106263577938,
+      "loss_ci_hi": 0.37688306596875193,
+      "rmse_norm": 1.3055747210979463,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_fine_neural",
+      "loss": 0.3520426255464554,
+      "loss_ci_lo": 0.3386021374762058,
+      "loss_ci_hi": 0.3663466328829527,
+      "rmse_norm": 1.2762556517124175,
+      "n_batches": 50
+    }
+  ]
+}

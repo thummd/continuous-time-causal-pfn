@@ -1,0 +1,96 @@
+{
+  "eval_distribution": {
+    "mechanism_kind": "linear",
+    "schedule": "regular",
+    "dt": 1.0,
+    "substeps": 1,
+    "n_eval_batches": 50,
+    "batch_size": 32,
+    "eval_seed": 99999,
+    "checkpoint_seeds": [
+      2
+    ]
+  },
+  "rows": [
+    {
+      "cell": "pos_naive_OU",
+      "checkpoint_seed": 2,
+      "checkpoint_path": "checkpoints/ct/grid_v4/pos_naive_OU/seed_2/continuous_do_over_time_pfn_best.pt",
+      "loss": 0.36023609548807145,
+      "loss_ci_lo": 0.34112717739492654,
+      "loss_ci_hi": 0.3799689259603619,
+      "rmse_norm": 1.3110246467590332,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_fine_OU",
+      "checkpoint_seed": 2,
+      "checkpoint_path": "checkpoints/ct/grid_v4/pos_fine_OU/seed_2/continuous_do_over_time_pfn_best.pt",
+      "loss": 0.36323993623256684,
+      "loss_ci_lo": 0.34403767850995065,
+      "loss_ci_hi": 0.38353066541254516,
+      "rmse_norm": 1.318347454071045,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_naive_OU",
+      "checkpoint_seed": 2,
+      "checkpoint_path": "checkpoints/ct/grid_v4/time_naive_OU/seed_2/continuous_do_over_time_pfn_best.pt",
+      "loss": 0.36060711920261385,
+      "loss_ci_lo": 0.3417018283903599,
+      "loss_ci_hi": 0.3801930494308472,
+      "rmse_norm": 1.3132704126834869,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_fine_OU",
+      "checkpoint_seed": 2,
+      "checkpoint_path": "checkpoints/ct/grid_v4/time_fine_OU/seed_2/continuous_do_over_time_pfn_best.pt",
+      "loss": 0.3651903954148292,
+      "loss_ci_lo": 0.3456246355101466,
+      "loss_ci_hi": 0.38598357523977755,
+      "rmse_norm": 1.3242476773262024,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_naive_neural",
+      "checkpoint_seed": 2,
+      "checkpoint_path": "checkpoints/ct/grid_v4/pos_naive_neural/seed_2/continuous_do_over_time_pfn_best.pt",
+      "loss": 0.36301594227552414,
+      "loss_ci_lo": 0.34373012300580735,
+      "loss_ci_hi": 0.38337538814544675,
+      "rmse_norm": 1.3112267875671386,
+      "n_batches": 50
+    },
+    {
+      "cell": "pos_fine_neural",
+      "checkpoint_seed": 2,
+      "checkpoint_path": "checkpoints/ct/grid_v4/pos_fine_neural/seed_2/continuous_do_over_time_pfn_best.pt",
+      "loss": 0.36062380582094195,
+      "loss_ci_lo": 0.3419680573195219,
+      "loss_ci_hi": 0.3804292392581701,
+      "rmse_norm": 1.3057060241699219,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_naive_neural",
+      "checkpoint_seed": 2,
+      "checkpoint_path": "checkpoints/ct/grid_v4/time_naive_neural/seed_2/continuous_do_over_time_pfn_best.pt",
+      "loss": 0.3633967739343643,
+      "loss_ci_lo": 0.3439512422680855,
+      "loss_ci_hi": 0.3838742408156395,
+      "rmse_norm": 1.310806896686554,
+      "n_batches": 50
+    },
+    {
+      "cell": "time_fine_neural",
+      "checkpoint_seed": 2,
+      "checkpoint_path": "checkpoints/ct/grid_v4/time_fine_neural/seed_2/continuous_do_over_time_pfn_best.pt",
+      "loss": 0.36064136803150176,
+      "loss_ci_lo": 0.3419900573939085,
+      "loss_ci_hi": 0.3804974516481161,
+      "rmse_norm": 1.3056654357910156,
+      "n_batches": 50
+    }
+  ]
+}
