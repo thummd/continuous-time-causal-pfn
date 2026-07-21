@@ -1,0 +1,10 @@
+{
+ "schedule": "mixed",
+ "substeps": 1,
+ "mc": 200,
+ "intervention_value_scale": 1.0,
+ "n_used": 147,
+ "n_skipped": 3,
+ "oracle_pinball": 0.24142352650474697,
+ "sem": 0.020003898838565022
+}

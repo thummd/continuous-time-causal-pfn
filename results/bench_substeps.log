@@ -1,0 +1,43 @@
+launcher: PYTHONPATH=/home/dennis/repos/continuous-time-causal-pfn
+device=cuda:2  batch=32  timed_batches=20
+
+  num_substeps=  1  datagen=  1177.4 ms/batch  x 1.00 vs s1  peak_mem=    0.0 MB
+  num_substeps=  2  datagen=  2254.4 ms/batch  x 1.91 vs s1  peak_mem=    0.0 MB
+  num_substeps=  4  datagen=  4376.6 ms/batch  x 3.72 vs s1  peak_mem=    0.0 MB
+  num_substeps=  8  datagen=  8667.4 ms/batch  x 7.36 vs s1  peak_mem=    0.0 MB
+  num_substeps= 16  datagen= 17198.9 ms/batch  x14.61 vs s1  peak_mem=    0.0 MB
+  num_substeps= 32  datagen= 34361.2 ms/batch  x29.18 vs s1  peak_mem=    0.0 MB
+
+  model fwd+bwd+step: 32.2 ms/batch  (INDEPENDENT of num_substeps)
+
+=== JSON ===
+{
+  "device": "cuda:2",
+  "batch": 32,
+  "datagen_ms_per_batch": {
+    "1": 1177.4028732004808,
+    "2": 2254.3772698991233,
+    "4": 4376.64282124897,
+    "8": 8667.448226749548,
+    "16": 17198.874970249017,
+    "32": 34361.20793809823
+  },
+  "datagen_rel_to_s1": {
+    "1": 1.0,
+    "2": 1.9147033876103527,
+    "4": 3.7172007312604394,
+    "8": 7.361497431367069,
+    "16": 14.607468150216155,
+    "32": 29.183900192714596
+  },
+  "peak_mem_mb": {
+    "1": 0.0,
+    "2": 0.0,
+    "4": 0.0,
+    "8": 0.0,
+    "16": 0.0,
+    "32": 0.0
+  },
+  "model_fwd_bwd_ms": 32.154368300689384
+}
+BENCH_COMPLETE

@@ -136,3 +136,37 @@ def from_times(
     if (dts <= 0).any():
         raise ValueError("times must be strictly increasing")
     return times, dts
+
+
+def mixed_schedule(
+    T: int,
+    dt: float = 1.0,
+    jitter: float = 0.3,
+    rate: float = 1.0,
+    weights: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+    generator: Optional[torch.Generator] = None,
+    device: Optional[torch.device] = None,
+    dtype: torch.dtype = torch.float32,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Per-call dispatch to one of {regular, jittered, exponential}.
+
+    Picks a schedule family per invocation according to ``weights``
+    (regular / jittered / exponential).  Used as the unified training
+    schedule so a single checkpoint sees all three families during
+    training.
+    """
+    w = torch.tensor(weights, device=device, dtype=torch.float32)
+    if w.numel() != 3 or (w < 0).any() or float(w.sum()) <= 0:
+        raise ValueError(
+            f"weights must be length-3 nonnegative with positive sum, got {weights}"
+        )
+    idx = int(torch.multinomial(w, num_samples=1, generator=generator).item())
+    if idx == 0:
+        return regular_schedule(T=T, dt=dt, device=device, dtype=dtype)
+    if idx == 1:
+        return jittered_schedule(
+            T=T, dt=dt, jitter=jitter, generator=generator, device=device, dtype=dtype,
+        )
+    return exponential_schedule(
+        T=T, rate=rate, generator=generator, device=device, dtype=dtype,
+    )

@@ -53,7 +53,7 @@ def _read_batched(b: dict) -> tuple:
     "structure, expected_hidden_count",
     [
         ("back_door", 0),
-        ("rct_no_confounding", 0),
+        ("bivariate", 0),
         ("front_door", 1),
         ("instrumental_variable", 1),
         ("unobserved_confounder", 1),
@@ -72,7 +72,7 @@ def test_sequential_path_hidden_mask_count(structure, expected_hidden_count):
     "structure, expected_hidden_count",
     [
         ("back_door", 0),
-        ("rct_no_confounding", 0),
+        ("bivariate", 0),
         ("front_door", 1),
         ("instrumental_variable", 1),
         ("unobserved_confounder", 1),

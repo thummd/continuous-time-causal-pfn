@@ -43,7 +43,7 @@ def _tiny_model(n_max: int = N_MAX) -> ContinuousDoOverTimePFN:
     "structure, expected_hidden_count",
     [
         ("back_door", 0),
-        ("rct_no_confounding", 0),
+        ("bivariate", 0),
         ("front_door", 1),              # U hidden
         ("instrumental_variable", 1),   # U hidden
         ("unobserved_confounder", 1),   # U hidden

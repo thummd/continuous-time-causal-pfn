@@ -201,7 +201,7 @@ def test_interventional_mode_does_not_share_noise():
 
 @pytest.mark.parametrize(
     "structure",
-    ["back_door", "front_door", "instrumental_variable", "rct_no_confounding"],
+    ["back_door", "front_door", "instrumental_variable", "bivariate"],
 )
 def test_all_key_tscm_structures_run_through_model(structure):
     loader = ContinuousTemporalInterventionDataLoader(

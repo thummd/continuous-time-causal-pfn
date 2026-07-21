@@ -39,7 +39,7 @@ prior:
   num_substeps: 1             # Phase-11 fine-grid integration. 1 = tier-(B) naive integration (one EM step per observation gap). Large values approximate tier-(C) schedule-invariant continuous integration.
   p_no_context: 0.0           # Phase-13b zero-context training augmentation. Probability that a sample's intervention starts at times[0] so the encoder runs on an empty pre-context window (matches PK eval regime).
   # TSCM-structured mode only:
-  tscm_structure: back_door   # one of: back_door, front_door, instrumental_variable, rct_no_confounding, ...
+  tscm_structure: back_door   # one of: back_door, front_door, instrumental_variable, bivariate, ...
   schedule: regular           # regular | jittered | exponential
   dt: 1.0                     # Regular / jittered spacing (units match the OU time scale).
   jitter: 0.3                 # Fraction of ``dt`` for uniform jitter (jittered schedule only).

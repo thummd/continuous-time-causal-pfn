@@ -49,7 +49,7 @@ class ContinuousTemporalInterventionDataLoader:
         Batch size.
     tscm_structure : str
         Named :class:`TSCMStructure` value (``back_door``, ``front_door``, ...).
-    schedule : {"regular", "jittered", "exponential"}
+    schedule : {"regular", "jittered", "exponential", "mixed"}
         Observation schedule family; see :mod:`time_schedule`.
     pair_mode : {"counterfactual", "interventional"}
         Paired-sample semantics.  The workshop paper defaults to

@@ -1,0 +1,10 @@
+{
+ "schedule": "regular",
+ "substeps": 1,
+ "mc": 200,
+ "intervention_value_scale": 1.0,
+ "n_used": 148,
+ "n_skipped": 2,
+ "oracle_pinball": 0.22783398247763445,
+ "sem": 0.015011864789872783
+}

@@ -265,7 +265,7 @@ def test_checkpoint_roundtrip_then_evaluate():
             n_cross_attn_heads=2, context_window=CONTEXT_WINDOW,
             num_time_frequencies=8,
             tau_levels=[0.1, 0.5, 0.9],
-            tscm_structure="rct_no_confounding",
+            tscm_structure="bivariate",
             schedule="regular", dt=1.0, pair_mode="counterfactual",
             intervention_kind_probs=(1.0, 0.0, 0.0),
             t_range=(16, 16),

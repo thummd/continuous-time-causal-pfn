@@ -73,7 +73,7 @@ def test_tscm_hidden_vars():
     s4 = TSCMSampler(TSCMStructure.OBSERVED_CONFOUNDER)
     assert s4.get_hidden_vars() == []
 
-    s5 = TSCMSampler(TSCMStructure.RCT_NO_CONFOUNDING)
+    s5 = TSCMSampler(TSCMStructure.BIVARIATE)
     assert s5.get_hidden_vars() == []
 
 

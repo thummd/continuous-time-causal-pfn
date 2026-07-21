@@ -50,7 +50,11 @@ prior:
   t_range: [60, 120]
   intervention_kind_probs: [0.5, 0.3, 0.2]
   intervention_source: prior
-  intervention_value_scale: 2.0
+  # The published tab:main was evaluated at scale 1.0 (artifacts in
+  # results/grid_v4_synth_finegrid_iv1/).  Scale 2.0 shifts every cell's
+  # absolute loss up by ~0.02-0.06 without changing the ordering; those
+  # runs are kept in results/grid_v4_synth_finegrid/ for comparison.
+  intervention_value_scale: 1.0
   intervention_window_frac: [0.1, 0.3]
   soft_shift_scale: 1.0
   time_varying_profile: random
