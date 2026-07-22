@@ -19,9 +19,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default="results/grid_v4_synth_finegrid")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
-    ap.add_argument("--out", default="results/grid_v4_synth_finegrid/aggregate_summary.json")
+    # Default the summary next to the inputs, not to a hardcoded sibling
+    # directory -- otherwise `--dir <other>` silently overwrites this file.
+    ap.add_argument("--out", default=None)
     args = ap.parse_args()
     D, SEEDS = args.dir, args.seeds
+    if args.out is None:
+        args.out = os.path.join(D, "aggregate_summary.json")
 
     def load(enc, integ, prior, seed, cfg):
         f = os.path.join(D, f"{enc}_{integ}_{prior}_seed{seed}_{cfg}.json")
