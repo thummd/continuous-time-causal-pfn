@@ -62,6 +62,16 @@ for seed in ${SEEDS}; do
         echo "seed=${seed} mech=${mech}  ckpt=${ckpt}"
         echo "==================================================="
 
+        # --- Theophylline (N=0, paper protocol) ---
+        # Seed 0 reproduces the originally published single-seed row
+        # (pooled RMSE 2.41, baseline 2.37, lift -1.8%, Pearson r +0.53);
+        # the five-seed mean is what tab:real now reports.
+        tout="${OUT_DIR}/theophylline_p13b_pnc000_${mech}_seed${seed}.json"
+        echo "  [theophylline] -> ${tout}"
+        run_eval --checkpoint "${ckpt}" --benchmark theophylline \
+            --pre-baseline-n 0 --device "${GPU}" --save-json "${tout}" \
+            || echo "  !! FAILED theophylline seed=${seed} mech=${mech}" >&2
+
         # --- Warfarin (N=0, paper protocol) ---
         # Per-eval failures are logged and skipped (not fatal) so one bad
         # cell can't abort the whole 40-eval sweep.

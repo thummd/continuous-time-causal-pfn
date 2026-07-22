@@ -3,8 +3,8 @@
  "substeps": 1,
  "mc": 200,
  "intervention_value_scale": 1.0,
- "n_used": 148,
- "n_skipped": 2,
- "oracle_pinball": 0.22783398247763445,
- "sem": 0.015011864789872783
+ "n_used": 146,
+ "n_skipped": 4,
+ "oracle_pinball": 0.3045933054712096,
+ "sem": 0.02115086426250873
 }

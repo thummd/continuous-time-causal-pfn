@@ -1,9 +1,0 @@
-{
- "schedule": "regular",
- "substeps": 1,
- "mc": 200,
- "n_used": 148,
- "n_skipped": 2,
- "oracle_pinball": 0.2301206398975832,
- "sem": 0.01545808156287294
-}
