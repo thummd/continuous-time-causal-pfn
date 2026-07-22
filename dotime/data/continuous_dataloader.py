@@ -118,6 +118,7 @@ class ContinuousTemporalInterventionDataLoader:
         neural_out_scale_range: tuple = (0.5, 2.0),
         num_substeps: int = 1,
         p_no_context: float = 0.0,
+        vectorize: bool = False,
     ) -> None:
         """Construct the loader.
 
@@ -160,6 +161,7 @@ class ContinuousTemporalInterventionDataLoader:
             weight_scale=weight_scale,
             num_substeps=num_substeps,
             p_no_context=p_no_context,
+            vectorize=vectorize,
             seed=seed,
         )
 

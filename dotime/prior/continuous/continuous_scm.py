@@ -365,6 +365,21 @@ class ContinuousSCM:
                 f"({fine_steps_total}, {self.n_vars})"
             )
 
+        # Vectorised fast path: numerically equivalent to the loop below
+        # (tests/test_vectorized_equiv.py), ~4x faster on mixed neural/OU
+        # graphs at num_substeps=8.  Only plain OU/neural graphs qualify;
+        # anything else (e.g. regime switching) uses the reference loop.
+        if getattr(self, "vectorize", False):
+            from .vectorized_sim import (
+                _VectorizedPlan, simulate_vectorized, can_vectorize,
+            )
+            if can_vectorize(self.mechanisms):
+                if getattr(self, "_vec_plan", None) is None:
+                    self._vec_plan = _VectorizedPlan(
+                        self.mechanisms, self.device, self.dtype)
+                return simulate_vectorized(
+                    self, times, dts, intervention, x0, noise, num_substeps)
+
         if x0 is None:
             x = torch.zeros(self.n_vars, device=self.device, dtype=self.dtype)
         else:

@@ -266,6 +266,7 @@ class ContinuousExtendedPrior:
         weight_scale: float = 0.5,
         num_substeps: int = 1,
         p_no_context: float = 0.0,
+        vectorize: bool = False,
         seed: int = 42,
     ) -> None:
         if pair_mode not in ("counterfactual", "interventional"):
@@ -304,6 +305,10 @@ class ContinuousExtendedPrior:
         self.soft_shift_scale = float(soft_shift_scale)
         self.num_substeps = int(num_substeps)
         self.p_no_context = float(p_no_context)
+        # Opt-in vectorised data generation (~4x on mixed neural/OU graphs at
+        # num_substeps=8).  Numerically equivalent to the reference loop; see
+        # tests/test_vectorized_equiv.py.  Off by default.
+        self.vectorize = bool(vectorize)
 
         self.sampler = ContinuousTSCMSampler(
             structure=TSCMStructure(tscm_structure),
@@ -408,6 +413,7 @@ class ContinuousExtendedPrior:
         # 2. Sample SCM and its topology-dependent metadata via the hook.
         ctx = self._sample_scm_context()
         scm = ctx.scm
+        scm.vectorize = self.vectorize  # opt-in fast path; loop otherwise
         n_vars = ctx.n_vars
         canonical_perm = ctx.canonical_perm
         topo_to_canon = ctx.topo_to_canon

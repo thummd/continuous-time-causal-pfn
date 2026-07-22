@@ -101,6 +101,12 @@ def main() -> None:
              "tier-(C) schedule-invariant continuous integration.",
     )
     parser.add_argument(
+        "--vectorize", action="store_true", default=False,
+        help="Use the vectorised data generator (~4x faster on mixed "
+             "neural/OU graphs at large --num-substeps; numerically "
+             "equivalent to the reference loop).",
+    )
+    parser.add_argument(
         "--p-no-context", type=float, default=None,
         help="Phase-13b zero-context training augmentation. Probability "
              "that a training sample's intervention starts at the very "
@@ -181,6 +187,7 @@ def main() -> None:
         neural_hidden_dim=args.neural_hidden_dim or p.get("neural_hidden_dim", 8),
         neural_out_scale_range=tuple(p.get("neural_out_scale_range", [0.5, 2.0])),
         num_substeps=args.num_substeps or p.get("num_substeps", 1),
+        vectorize=args.vectorize or p.get("vectorize", False),
         p_no_context=args.p_no_context if args.p_no_context is not None else p.get("p_no_context", 0.0),
         tscm_structure=args.tscm_structure or p["tscm_structure"],
         schedule=args.schedule or p["schedule"],

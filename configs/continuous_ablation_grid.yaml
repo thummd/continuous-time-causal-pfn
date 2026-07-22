@@ -40,6 +40,9 @@ prior:
   neural_hidden_dim: 8
   neural_out_scale_range: [0.5, 2.0]
   num_substeps: 1               # CLI override per cell.
+  vectorize: true               # Vectorised data generator: ~4x on the
+                                # fine neural cells, numerically identical
+                                # to the loop (tests/test_vectorized_equiv.py).
   p_no_context: 0.0
   tscm_structure: back_door
   schedule: mixed               # Mixed schedule: regular | jittered | exponential picked per trajectory.
