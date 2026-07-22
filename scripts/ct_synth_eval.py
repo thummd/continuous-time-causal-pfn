@@ -129,6 +129,13 @@ def main() -> None:
     parser.add_argument("--exp-rate", type=float, default=None)
     parser.add_argument("--substeps", type=int, default=None,
                         help="EM integration substeps per observation gap.")
+    parser.add_argument(
+        "--intervention-value-scale", type=float, default=1.0,
+        help="Intervention magnitude of the eval prior. MUST match the "
+             "training config for a train==eval comparison; the reported "
+             "table pins both to 1.0. (The pre-release eval hardcoded 2.0, "
+             "silently mismatching 1.0-trained checkpoints.)",
+    )
     parser.add_argument("--n-eval-batches", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=24)
     parser.add_argument("--seed", type=int, default=20260508,
@@ -175,7 +182,7 @@ def main() -> None:
         theta_range=(0.1, 0.5),
         sigma_range=(0.2, 0.6),
         weight_scale=0.3,
-        intervention_value_scale=2.0,
+        intervention_value_scale=args.intervention_value_scale,
         intervention_window_frac=(0.1, 0.3),
         mechanism_kind=prior_cfg.get("mechanism_kind", "linear"),
         p_neural=prior_cfg.get("p_neural", 0.0),
