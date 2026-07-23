@@ -1,0 +1,12 @@
+% Standalone wrapper for the temporal TSCM structures figure.
+% Body shared with the TSALM paper (Thumm & Chen, 2026): two consecutive
+% slices T-1 / T, do(a_T) severs incoming edges (red dashed). Edge lists
+% transcribed from dotime tscm_sampler.py with use_lagged_edges=True --
+% the same lists ContinuousTSCMSampler collapses into per-variable parent
+% sets (autoregressive self-loops absorbed by the -theta*X drift).
+\documentclass[border=6pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta}
+\begin{document}
+\input{tscm_structures_temporal_body.tex}
+\end{document}
