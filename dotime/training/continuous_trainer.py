@@ -98,6 +98,7 @@ def train_continuous(
     head_type: str = "quantile",
     n_buckets: int = 1000,
     bucket_calibration_samples: int = 10000,
+    positional_only: bool = False,
     # Prior config
     prior_mode: str = "tscm",
     n_min_prior: int = 3,
@@ -113,6 +114,7 @@ def train_continuous(
     neural_hidden_dim: int = 8,
     neural_out_scale_range: tuple = (0.5, 2.0),
     num_substeps: int = 1,
+    vectorize: bool = False,
     p_no_context: float = 0.0,
     tscm_structure: str = "back_door",
     schedule: str = "regular",
@@ -193,6 +195,7 @@ def train_continuous(
                 "neural_hidden_dim": neural_hidden_dim,
                 "neural_out_scale_range": list(neural_out_scale_range),
                 "num_substeps": num_substeps,
+                "vectorize": vectorize,
                 "p_no_context": p_no_context,
                 "prior_mode": prior_mode,
                 "edge_prob": edge_prob,
@@ -243,6 +246,7 @@ def train_continuous(
         num_time_frequencies=num_time_frequencies,
         time_min_freq=time_min_freq,
         time_max_freq=time_max_freq,
+        positional_only=positional_only,
     ).to(device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"   Parameters: {num_params:,}")
@@ -275,6 +279,7 @@ def train_continuous(
                 neural_hidden_dim=neural_hidden_dim,
                 neural_out_scale_range=neural_out_scale_range,
                 num_substeps=num_substeps,
+                vectorize=vectorize,
                 p_no_context=p_no_context,
                 schedule=schedule,
                 dt=dt,
@@ -316,6 +321,7 @@ def train_continuous(
         neural_hidden_dim=neural_hidden_dim,
         neural_out_scale_range=neural_out_scale_range,
         num_substeps=num_substeps,
+        vectorize=vectorize,
         p_no_context=p_no_context,
         schedule=schedule,
         dt=dt,

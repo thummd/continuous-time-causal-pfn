@@ -101,6 +101,12 @@ def main() -> None:
              "tier-(C) schedule-invariant continuous integration.",
     )
     parser.add_argument(
+        "--positional-only", action="store_true", default=False,
+        help="Ablate the timestamp encoder: rewrite all time-bearing "
+             "fields to sequence-index coordinates (the 'pos' rows of the "
+             "ablation table).",
+    )
+    parser.add_argument(
         "--vectorize", action="store_true", default=False,
         help="Use the vectorised data generator (~4x faster on mixed "
              "neural/OU graphs at large --num-substeps; numerically "
@@ -119,7 +125,8 @@ def main() -> None:
     )
     parser.add_argument("--tscm-structure", type=str, default=None)
     parser.add_argument(
-        "--schedule", type=str, default=None, choices=["regular", "jittered", "exponential"]
+        "--schedule", type=str, default=None,
+        choices=["regular", "jittered", "exponential", "mixed"]
     )
     parser.add_argument(
         "--pair-mode", type=str, default=None, choices=["counterfactual", "interventional"]
@@ -188,6 +195,7 @@ def main() -> None:
         neural_out_scale_range=tuple(p.get("neural_out_scale_range", [0.5, 2.0])),
         num_substeps=args.num_substeps or p.get("num_substeps", 1),
         vectorize=args.vectorize or p.get("vectorize", False),
+        positional_only=args.positional_only,
         p_no_context=args.p_no_context if args.p_no_context is not None else p.get("p_no_context", 0.0),
         tscm_structure=args.tscm_structure or p["tscm_structure"],
         schedule=args.schedule or p["schedule"],
