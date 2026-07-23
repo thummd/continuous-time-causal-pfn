@@ -1,0 +1,95 @@
+\documentclass[border=6pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta}
+\begin{document}
+% Continuous-time "collapsed" view (cf. Boeken & Mooij 2026, Fig. 1a):
+% one node per variable, a self-loop for the SDE's own-value dependence
+% (-theta_v X_v), and u->v wherever u enters v's drift. do(a) severs a's
+% incoming edges, self-loop included (red dashed).
+\begingroup
+\tikzset{
+  ct/.style   = {circle, draw=blue!55!black, fill=blue!15, minimum size=6.4mm,
+                 inner sep=0pt, font=\small},
+  cint/.style = {circle, draw=red!70!black, thick, fill=orange!75, minimum size=6.4mm,
+                 inner sep=0pt, font=\small},
+  cout/.style = {circle, draw=orange!85!black, thick, fill=white, minimum size=6.4mm,
+                 inner sep=0pt, font=\small},
+  chid/.style = {circle, draw=black!70, dashed, fill=white, minimum size=6.4mm,
+                 inner sep=0pt, font=\small},
+  ar/.style   = {-{Stealth[length=1.9mm]}, blue!55!black, semithick},
+  cut/.style  = {-{Stealth[length=1.9mm]}, red!75!black, thick, dashed},
+  slL/.style  = {ar,  out=160, in=200, looseness=7},   % self-loop, left
+  slR/.style  = {ar,  out=-20, in=20,  looseness=7},   % self-loop, right
+  slU/.style  = {ar,  out=70,  in=110, looseness=7},   % self-loop, up
+  slD/.style  = {ar,  out=250, in=290, looseness=7},   % self-loop, down
+  slLcut/.style={cut, out=160, in=200, looseness=7},   % severed self-loop
+  ttl/.style  = {font=\small\bfseries},
+  fam/.style  = {font=\footnotesize\itshape, text=black!70},
+}
+\newcommand{\panel}[3]{%
+  \begin{tikzpicture}[baseline=(current bounding box.north), x=1.35cm, y=1.15cm]
+    \node[ttl] at (0.5,2.05) {#1}; \node[fam] at (0.5,1.68) {#2}; #3
+  \end{tikzpicture}}
+\setlength{\tabcolsep}{9pt}
+\begin{tabular}{cccc}
+%
+\panel{Bi-Variate}{trivial (RCT)}{%
+  \node[cint] (a) at (0,0) {$A$}; \node[cout] (y) at (1,0) {$Y$};
+  \draw[ar] (a) -- (y); \draw[slLcut] (a) to (a); \draw[slR] (y) to (y);
+}
+&
+\panel{Observed-Confounder}{back-door (null)}{%
+  \node[ct] (x) at (0.5,0.6) {$X$}; \node[cint] (a) at (0,-0.4) {$A$};
+  \node[cout] (y) at (1,-0.4) {$Y$};
+  \draw[cut] (x) -- (a); \draw[ar] (x) -- (y);
+  \draw[slLcut] (a) to (a); \draw[slU] (x) to (x); \draw[slR] (y) to (y);
+}
+&
+\panel{Back-Door}{back-door}{%
+  \node[ct] (x) at (0.5,0.6) {$X$}; \node[cint] (a) at (0,-0.4) {$A$};
+  \node[cout] (y) at (1,-0.4) {$Y$};
+  \draw[cut] (x) -- (a); \draw[ar] (x) -- (y); \draw[ar] (a) -- (y);
+  \draw[slLcut] (a) to (a); \draw[slU] (x) to (x); \draw[slR] (y) to (y);
+}
+&
+\panel{Confounder-Mediator}{back-door}{%
+  \node[ct] (x) at (0.5,0.8) {$X$}; \node[cint] (a) at (-0.2,-0.2) {$A$};
+  \node[ct] (m) at (0.5,-0.2) {$M$}; \node[cout] (y) at (1.2,-0.2) {$Y$};
+  \draw[cut] (x) -- (a); \draw[ar] (a) -- (m); \draw[ar] (m) -- (y);
+  \draw[ar] (x) to[bend left=20] (y);
+  \draw[slLcut] (a) to (a); \draw[slU] (x) to (x); \draw[slD] (m) to (m); \draw[slR] (y) to (y);
+}
+\\[2.2em]
+%
+\panel{Mediator}{front-door}{%
+  \node[cint] (a) at (0,0) {$A$}; \node[ct] (m) at (0.7,0) {$M$};
+  \node[cout] (y) at (1.4,0) {$Y$};
+  \draw[ar] (a) -- (m); \draw[ar] (m) -- (y);
+  \draw[slLcut] (a) to (a); \draw[slD] (m) to (m); \draw[slR] (y) to (y);
+}
+&
+\panel{Front-Door}{front-door}{%
+  \node[chid] (u) at (0.5,0.8) {$U$}; \node[cint] (a) at (-0.2,-0.2) {$A$};
+  \node[ct] (m) at (0.5,-0.2) {$M$}; \node[cout] (y) at (1.2,-0.2) {$Y$};
+  \draw[cut] (u) -- (a); \draw[ar] (u) to[bend left=20] (y);
+  \draw[ar] (a) -- (m); \draw[ar] (m) -- (y);
+  \draw[slLcut] (a) to (a); \draw[slU] (u) to (u); \draw[slD] (m) to (m); \draw[slR] (y) to (y);
+}
+&
+\panel{Instrumental-Variable}{IV}{%
+  \node[chid] (u) at (0.6,0.8) {$U$}; \node[ct] (x) at (-0.4,-0.2) {$X$};
+  \node[cint] (a) at (0.5,-0.2) {$A$}; \node[cout] (y) at (1.4,-0.2) {$Y$};
+  \draw[cut] (x) -- (a); \draw[ar] (a) -- (y);
+  \draw[cut] (u) -- (a); \draw[ar] (u) to[bend left=20] (y);
+  \draw[slLcut] (a) to (a); \draw[slU] (u) to (u); \draw[slU] (x) to (x); \draw[slR] (y) to (y);
+}
+&
+\panel{Unobserved-Confounder}{non-identifiable}{%
+  \node[chid] (u) at (0.5,0.6) {$U$}; \node[cint] (a) at (0,-0.4) {$A$};
+  \node[cout] (y) at (1,-0.4) {$Y$};
+  \draw[cut] (u) -- (a); \draw[ar] (u) -- (y);
+  \draw[slLcut] (a) to (a); \draw[slU] (u) to (u); \draw[slR] (y) to (y);
+}
+\end{tabular}
+\endgroup
+\end{document}
