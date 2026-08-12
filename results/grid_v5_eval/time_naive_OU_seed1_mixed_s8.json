@@ -1,0 +1,26 @@
+{
+  "checkpoint": "/home/dennis/repos/continuous-time-causal-pfn/results/grid_v5/time_naive_OU/seed_1/continuous_do_over_time_pfn_best.pt",
+  "eval_mode": "ou_mixed",
+  "eval_prior_config": {
+    "mechanism_kind": "linear",
+    "schedule": "mixed",
+    "dt": 1.0,
+    "jitter": 0.3,
+    "num_substeps": 8
+  },
+  "n_eval_batches": 50,
+  "batch_size": 24,
+  "seed": 20260508,
+  "metrics": {
+    "eval_loss": 0.4003868836164475,
+    "eval_rmse": 1.475505425930023,
+    "n_batches": 50
+  },
+  "checkpoint_config": {
+    "n_max": 10,
+    "embed_size": 128,
+    "tscm_structure": "back_door",
+    "schedule": "mixed",
+    "pair_mode": "counterfactual"
+  }
+}
