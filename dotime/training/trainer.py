@@ -276,6 +276,30 @@ def train(
     step_log_file.write("step,loss,y_max,lr\n")
 
     for step, batch in enumerate(train_loader):
+        if step == 0:
+            # Step-zero target-QA (protocol rule, CLAUDE.md): seed protocols
+            # guard against variance, not systematic target corruption. Log
+            # target-distribution stats per arm and assert the ACTIVE training
+            # target is not degenerate (mirrored from do-over-time-pfn).
+            import sys as _sys
+            print(f"   [target-QA] dotime package: {_sys.modules['dotime'].__file__}")
+            for _key in ("Y_true", "Y_obs", "Y_causal_effect"):
+                if _key in batch:
+                    _t = batch[_key].detach().float().reshape(-1)
+                    _nz = float((_t.abs() > 1e-8).float().mean())
+                    print(f"   [target-QA] {_key}: nonzero_frac={_nz:.3f} "
+                          f"mean={_t.mean():.4f} var={_t.var():.4f} n={_t.numel()}")
+            _active = train_target_key if train_target_key in batch else "Y_true"
+            _t = batch[_active].detach().float().reshape(-1)
+            _nz = float((_t.abs() > 1e-8).float().mean())
+            if _nz < 0.5:
+                raise RuntimeError(
+                    f"[target-QA] training target '{_active}' is degenerate: "
+                    f"nonzero fraction {_nz:.3f} < 0.5 at step 0. A near-zero "
+                    f"target distribution usually means the target was read "
+                    f"from a causally-masked tensor (the 2026-08 obs-arm bug). "
+                    f"Refusing to train."
+                )
         optimizer.zero_grad()
 
         # Observational-only ablation: zero out intervention context
