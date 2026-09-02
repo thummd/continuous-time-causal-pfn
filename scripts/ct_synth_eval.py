@@ -127,6 +127,11 @@ def main() -> None:
     parser.add_argument("--dt", type=float, default=None)
     parser.add_argument("--jitter", type=float, default=None)
     parser.add_argument("--exp-rate", type=float, default=None)
+    parser.add_argument(
+        "--vectorize", action="store_true", default=False,
+        help="Use the vectorised eval-data generator (numerically "
+             "equivalent to the reference loop; large speed-up at "
+             "high --substeps).")
     parser.add_argument("--substeps", type=int, default=None,
                         help="EM integration substeps per observation gap.")
     parser.add_argument(
@@ -195,6 +200,7 @@ def main() -> None:
         seed=args.seed,
         device=device,
         prefetch=0,
+        vectorize=args.vectorize,
     )
     try:
         loader = ContinuousTemporalInterventionDataLoader(
