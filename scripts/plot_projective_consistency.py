@@ -60,8 +60,10 @@ def main() -> None:
         ax.set_xticks(subs)
         ax.set_xticklabels([str(s) for s in subs])
     axes[0].set_ylabel("Wasserstein-1 distance", fontsize=8)
-    axes[1].legend(fontsize=6, frameon=False, loc="lower left")
-    fig.tight_layout()
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, fontsize=6.5, frameon=False, ncol=3,
+               loc="upper center", bbox_to_anchor=(0.5, 0.06))
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
     for ext in ("pdf", "png"):
         fig.savefig(f"{a.out}.{ext}", dpi=200, bbox_inches="tight")
     print(f"wrote {a.out}.pdf/.png")
